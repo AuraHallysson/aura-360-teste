@@ -87,7 +87,12 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
 const VERSAO_APP = "1.0.0";
-const VERSAO_DATA = "2026-08-19";
+const VERSAO_DATA = "2026-08-19"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
+// Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
+const formatarDataBR = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : (iso || "");
+};
 // Armazenamento separado por ambiente (evita misturar dados de teste e oficiais)
 const STORAGE_KEY = "aura-solicitacoes-v1-" + AMBIENTE;
 const SESSION_KEY = "aura-sessao-v1-" + AMBIENTE;
@@ -1759,7 +1764,7 @@ function TelaConfig({ dados, setDados, usuario }) {
               {[
                 ["Aplicativo", "AURA 360 Planta"],
                 ["Versão", "v" + VERSAO_APP],
-                ["Data da versão", VERSAO_DATA],
+                ["Data da versão", formatarDataBR(VERSAO_DATA)],
                 ["Ambiente", AMBIENTE_ROTULO + (AMBIENTE === "teste" ? " 🧪" : " ✅")],
               ].map(([k, v]) => (
                 <tr key={k}>
@@ -2239,7 +2244,7 @@ const Mascote = ({ tamanho = 120, style }) => (
 /* Rodapé com número de versão + ambiente — visível em toda a aplicação */
 const RodapeVersao = ({ style }) => (
   <div style={{ textAlign: "center", fontSize: 11, color: CORES.cinza, padding: "10px 0", ...style }}>
-    AURA 360 Planta · v{VERSAO_APP} ({VERSAO_DATA}) · {AMBIENTE_ROTULO}
+    AURA 360 Planta · v{VERSAO_APP} ({formatarDataBR(VERSAO_DATA)}) · {AMBIENTE_ROTULO}
   </div>
 );
 
