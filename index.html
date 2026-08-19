@@ -2391,16 +2391,6 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
    AURA 360 Planta — Home do portal (áreas macro)
    ============================================================ */
 function PortalHome({ nome, aoAbrir }) {
-  // "COM e SEM o Caquito": alterna a exibição do mascote na Home (lembra a escolha)
-  const [mostrarMascote, setMostrarMascote] = useState(() => {
-    try { return localStorage.getItem("aura__mascoteHome") !== "0"; } catch (e) { return true; }
-  });
-  const alternarMascote = () => setMostrarMascote((v) => {
-    const nv = !v;
-    try { localStorage.setItem("aura__mascoteHome", nv ? "1" : "0"); } catch (e) {}
-    return nv;
-  });
-
   const areas = [
     { id: "ADMIN", titulo: "Administrativo", icone: "📋", cor: CORES.azul, ativo: true,
       desc: "Requisições, compras, cadastros e serviços.",
@@ -2415,15 +2405,11 @@ function PortalHome({ nome, aoAbrir }) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 22, flexWrap: "wrap" }}>
-        {mostrarMascote && <Mascote tamanho={96} style={{ flex: "0 0 auto" }} />}
+        <Mascote tamanho={96} style={{ flex: "0 0 auto" }} />
         <div style={{ flex: "1 1 260px", minWidth: 0 }}>
           <h1 style={{ color: CORES.azul, margin: "0 0 4px", fontSize: 26 }}>Olá, {nome.split(" ")[0]}. Bem-vindo ao AURA 360 Planta.</h1>
           <p style={{ color: CORES.cinza, fontSize: 14, margin: 0 }}>Selecione uma área para começar.</p>
         </div>
-        <button type="button" onClick={alternarMascote}
-          style={{ border: `1px solid ${CORES.cinza}`, background: "#fff", color: CORES.azul, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", flex: "0 0 auto" }}>
-          {mostrarMascote ? "Ocultar mascote" : "Mostrar mascote"}
-        </button>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 18 }}>
         {areas.map((a) => (
