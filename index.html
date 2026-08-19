@@ -1,0 +1,2713 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AURA 360 Planta — Aura Minerals</title>
+<!-- PWA: app instalável (Adicionar à tela inicial / Instalar) -->
+<link rel="manifest" href="./manifest.webmanifest" />
+<meta name="theme-color" content="#2d3d70" />
+<link rel="icon" type="image/png" href="./icon-192.png" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Aura Compras" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<!-- MSAL: biblioteca oficial da Microsoft para autenticacao Entra ID -->
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<style>html,body{margin:0;padding:0;background:rgb(243,245,250);}</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// Persistencia fora do Claude: armazenamento do navegador quando disponivel, memoria como fallback.
+if (!window.storage) {
+  const mem = {};
+  const lsOk = (function(){ try { const t="__t__"; window.localStorage.setItem(t,"1"); window.localStorage.removeItem(t); return true; } catch(e){ return false; } })();
+  const ler = (k) => { try { if (lsOk) { const v = window.localStorage.getItem("aura__"+k); return v === null ? undefined : v; } } catch(e){} return mem[k]; };
+  const gravar = (k,v) => { try { if (lsOk) { window.localStorage.setItem("aura__"+k, v); return; } } catch(e){} mem[k]=v; };
+  const apagar = (k) => { try { if (lsOk) { window.localStorage.removeItem("aura__"+k); } } catch(e){} delete mem[k]; };
+  window.storage = {
+    async get(k){ const v = ler(k); if (v === undefined) throw new Error("chave inexistente"); return {key:k, value:v}; },
+    async set(k,v){ gravar(k,v); return {key:k}; },
+    async delete(k){ apagar(k); return {key:k, deleted:true}; },
+    async list(){ return {keys:[]}; }
+  };
+}
+// Toast interno (substitui alert, bloqueado em iframes de pre-visualizacao)
+function avisar(msg){
+  const t = document.createElement("div");
+  t.textContent = msg;
+  t.style.cssText = "position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:rgb(45,61,112);color:#fff;padding:12px 20px;border-radius:8px;font:14px 'Segoe UI',sans-serif;z-index:999;max-width:88%;white-space:pre-line;box-shadow:0 8px 24px rgba(45,61,112,.35);border-left:4px solid rgb(244,97,77)";
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(), 5500);
+}
+// PWA: registra o service worker (habilita instalação e uso offline do app shell)
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("./sw.js").catch(() => {}); });
+}
+</script>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useRef } = React;
+
+/* ============================================================
+   Sistema de Solicitação de Compras e Cadastros — Aura Minerals
+   Protótipo funcional (Web App)
+   - Login simulado (em produção: Microsoft Entra ID, restrito ao domínio corporativo)
+   - E-mails simulados (em produção: Microsoft Graph / Power Automate)
+   - Materiais via upload de CSV (em produção: SharePoint + Graph API)
+   ============================================================ */
+
+const CORES = {
+  azul: "rgb(45,61,112)",
+  laranja: "rgb(244,97,77)",
+  cinza: "rgb(176,183,193)",
+  cinzaClaro: "rgb(243,245,250)",
+  branco: "#ffffff",
+};
+
+/* Ambiente: "teste" (GitHub Pages / dados fictícios) ou "homolog" (oficial / Azure).
+   Detecta por hostname (github.io = teste) ou ?env=teste|homolog; padrão homolog. */
+const AMBIENTE = (function () {
+  try {
+    const h = (location.hostname || "").toLowerCase();
+    const q = (location.search || "").toLowerCase();
+    if (q.includes("env=homolog")) return "homolog";
+    if (q.includes("env=teste") || h.includes("github.io")) return "teste";
+  } catch (e) {}
+  return "homolog";
+})();
+const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologação";
+// Armazenamento separado por ambiente (evita misturar dados de teste e oficiais)
+const STORAGE_KEY = "aura-solicitacoes-v1-" + AMBIENTE;
+const SESSION_KEY = "aura-sessao-v1-" + AMBIENTE;
+const PRIMEIRO_ADMIN = "admin.teste@empresa-teste.com";
+const DOMINIO = "@empresa-teste.com";
+
+const MATERIAIS_INICIAIS = [
+  { codigo: "100234", descricao: "PARAFUSO SEXTAVADO M12X50 INOX", unidade: "UN" },
+  { codigo: "100987", descricao: "ROLAMENTO ESFERA 6205-2RS", unidade: "PC" },
+  { codigo: "101450", descricao: "CORREIA TRANSPORTADORA EP-500 800MM", unidade: "M" },
+  { codigo: "102311", descricao: "GRAXA EP-2 LITIO BALDE 20KG", unidade: "BD" },
+  { codigo: "103008", descricao: "LUVA NITRILICA CANO LONGO TAM G", unidade: "PAR" },
+  { codigo: "103776", descricao: "FILTRO DE AR PRIMARIO P/ BRITADOR", unidade: "UN" },
+  { codigo: "104521", descricao: "OLEO HIDRAULICO ISO VG 68 TAMBOR 200L", unidade: "TB" },
+  { codigo: "105090", descricao: "TELA DE PENEIRAMENTO 12MM 1500X2000", unidade: "UN" },
+];
+
+const nomeDoEmail = (email) =>
+  email
+    .split("@")[0]
+    .split(/[._-]/)
+    .map((p) => (p ? p[0].toUpperCase() + p.slice(1) : p))
+    .join(" ");
+
+const agoraStr = () =>
+  new Date().toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+/* ---------------- Senhas: armazenamento apenas como hash (PBKDF2-SHA256 + salt) ----------------
+   A senha digitada nunca é gravada: guarda-se somente um hash irreversível com salt individual.  */
+const _webCryptoOk = () => (typeof crypto !== "undefined" && crypto.subtle && crypto.getRandomValues);
+
+const gerarSalt = () => {
+  try {
+    if (_webCryptoOk()) return Array.from(crypto.getRandomValues(new Uint8Array(16))).map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch (e) { /* segue para o fallback */ }
+  // Fallback (contexto não seguro / file://): salt pseudoaleatório — MODO DEMONSTRAÇÃO apenas
+  let s = "";
+  for (let i = 0; i < 16; i++) s += Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
+  return s;
+};
+
+// Hash determinístico de fallback (sem Web Crypto). Não é forte — usado só no modo demonstração
+// quando o navegador não expõe crypto.subtle (ex.: app aberto como arquivo local file://).
+function _hashFallback(senha, salt) {
+  const s = String(salt) + "::" + String(senha);
+  let h1 = 0x811c9dc5, h2 = 0xc2b2ae35;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ c, 0x85ebca6b) >>> 0;
+  }
+  let out = "";
+  for (let k = 0; k < 8; k++) {
+    h1 = Math.imul(h1 ^ (h1 >>> 15), 0x2c1b3c6d) >>> 0;
+    h2 = Math.imul(h2 ^ (h2 >>> 13), 0x297a2d39) >>> 0;
+    out += ((h1 ^ h2) >>> 0).toString(16).padStart(8, "0");
+  }
+  return out;
+}
+
+// Método de hash disponível neste contexto ("pbkdf2" com Web Crypto; senão "fb")
+const metodoHash = () => (_webCryptoOk() ? "pbkdf2" : "fb");
+
+// Calcula o hash conforme o método (permite verificar senha gravada em qualquer contexto)
+async function hashSenha(senha, salt, metodo) {
+  const m = metodo || metodoHash();
+  if (m === "pbkdf2" && _webCryptoOk()) {
+    const enc = new TextEncoder();
+    const chave = await crypto.subtle.importKey("raw", enc.encode(senha), "PBKDF2", false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits(
+      { name: "PBKDF2", hash: "SHA-256", salt: enc.encode(salt), iterations: 100000 }, chave, 256
+    );
+    return Array.from(new Uint8Array(bits)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return _hashFallback(senha, salt);
+}
+// Sempre há um método de hash (Web Crypto ou fallback do modo demonstração)
+const criptoDisponivel = () => true;
+
+const dadosVazios = () => ({
+  usuarios: { [PRIMEIRO_ADMIN]: { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "Administrador" } },
+  compras: [],
+  cadastros: [],
+  materiais: MATERIAIS_INICIAIS,
+  materiaisAtualizadoEm: null,
+  auditoria: [], // trilha de auditoria (SOX): registros imutáveis, append-only
+});
+
+/* ---------------- Trilha de auditoria (SOX) ----------------
+   Registro imutável de TODAS as movimentações (quem, o quê, quando).
+   Os registros são apenas ANEXADOS (nunca editados/removidos pela aplicação).
+   Categorias: Compra | Cadastro | Movimentação | Materiais | Usuários | Acesso  */
+const LOG_CATEGORIAS = ["Compra", "Cadastro", "Movimentação", "Materiais", "Usuários", "Acesso"];
+function novoLog(usuario, categoria, acao, detalhe, refId) {
+  const agora = new Date();
+  return {
+    id: uid(),
+    ts: agora.toISOString(),                       // carimbo imutável e ordenável (UTC)
+    quando: agora.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    usuarioEmail: usuario && usuario.email ? usuario.email : "(sistema)",
+    usuarioNome: usuario && usuario.nome ? usuario.nome : "Sistema",
+    perfil: usuario && usuario.perfil ? usuario.perfil : "—",
+    categoria: categoria || "Movimentação",
+    acao: acao || "",
+    detalhe: detalhe || "",
+    refId: refId ? String(refId) : "",             // id da entidade relacionada (solicitação/usuário)
+  };
+}
+// Retorna uma nova cópia de `d` com um registro de auditoria anexado (append-only).
+function comLog(d, usuario, categoria, acao, detalhe, refId) {
+  return { ...d, auditoria: [...(d.auditoria || []), novoLog(usuario, categoria, acao, detalhe, refId)] };
+}
+
+/* ---------------- Persistência (window.storage) ---------------- */
+async function carregarDados() {
+  try {
+    const r = await window.storage.get(STORAGE_KEY, true);
+    if (r && r.value) {
+      const d = JSON.parse(r.value);
+      if (!d.usuarios[PRIMEIRO_ADMIN]) d.usuarios[PRIMEIRO_ADMIN] = { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "Administrador" };
+      else d.usuarios[PRIMEIRO_ADMIN].perfil = "Administrador";
+      if (!Array.isArray(d.auditoria)) d.auditoria = []; // migração: bases antigas sem trilha
+      return d;
+    }
+  } catch (e) { /* chave inexistente */ }
+  return dadosVazios();
+}
+async function salvarDados(d) {
+  try { await window.storage.set(STORAGE_KEY, JSON.stringify(d), true); } catch (e) { console.error("Falha ao salvar", e); }
+  // Multiusuário: replica no SharePoint apenas as diferenças
+  if (AUTENTICACAO_REAL && _ultimoSync) {
+    const anterior = _ultimoSync;
+    _ultimoSync = fotografar(d);
+    try { await sincronizarGraph(anterior, _ultimoSync); }
+    catch (e) {
+      console.error("Sincronização com o SharePoint falhou", e);
+      avisar("Atenção: a alteração foi salva localmente, mas a sincronização com o SharePoint falhou. Verifique sua conexão — o sistema tentará novamente na próxima alteração.");
+      _ultimoSync = anterior; // volta a base do diff para reenviar depois
+    }
+  }
+}
+
+/* ---------------- Componentes básicos ---------------- */
+const Botao = ({ children, onClick, tipo = "primario", disabled, style, title }) => {
+  const base = {
+    padding: "9px 18px", borderRadius: 6, fontSize: 14, fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer",
+    border: "1px solid transparent", opacity: disabled ? 0.45 : 1, transition: "filter .15s", fontFamily: "inherit",
+  };
+  const tipos = {
+    primario: { background: CORES.azul, color: "#fff" },
+    laranja: { background: CORES.laranja, color: "#fff" },
+    contorno: { background: "#fff", color: CORES.azul, border: `1px solid ${CORES.cinza}` },
+    perigo: { background: "#fff", color: CORES.laranja, border: `1px solid ${CORES.laranja}` },
+  };
+  return (
+    <button title={title} disabled={disabled} onClick={onClick} style={{ ...base, ...tipos[tipo], ...style }}
+      onMouseEnter={(e) => !disabled && (e.currentTarget.style.filter = "brightness(1.12)")}
+      onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}>
+      {children}
+    </button>
+  );
+};
+
+const Campo = ({ label, obrigatorio, children, legenda }) => (
+  <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+    <label style={{ fontSize: 12, fontWeight: 700, color: CORES.azul, textTransform: "uppercase", letterSpacing: ".04em" }}>
+      {label} {obrigatorio ? <span style={{ color: CORES.laranja }}>•</span> : null}
+    </label>
+    {children}
+    {legenda ? <span style={{ fontSize: 11.5, color: CORES.laranja, fontStyle: "italic" }}>{legenda}</span> : null}
+  </div>
+);
+
+const AnexoLink = ({ anexo }) => !anexo ? <span style={{ color: CORES.cinza }}>—</span> : (
+  <a href={anexo.url || anexo.dataUrl} target="_blank" rel="noreferrer" download={anexo.url ? undefined : anexo.nome}
+    style={{ color: CORES.laranja, fontWeight: 600, fontSize: 12.5, textDecoration: "none", whiteSpace: "nowrap" }} title={anexo.nome}>
+    📎 {anexo.nome.length > 20 ? anexo.nome.slice(0, 18) + "…" : anexo.nome}
+  </a>
+);
+
+const inputStyle = {
+  padding: "8px 10px", border: `1px solid ${CORES.cinza}`, borderRadius: 6, fontSize: 14,
+  color: CORES.azul, background: "#fff", outline: "none", width: "100%", boxSizing: "border-box", fontFamily: "inherit",
+};
+
+const Cartao = ({ children, style }) => (
+  <div style={{ background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 10, padding: 20, ...style }}>{children}</div>
+);
+
+/* ---------------- Modal de e-mails simulados ---------------- */
+function ModalEmails({ info, aoFechar }) {
+  if (!info) return null;
+  const todosAutomaticos = info.resultados.every((r) => r.enviado);
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(45,61,112,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 26, maxWidth: 540, width: "92%", borderTop: `4px solid ${CORES.laranja}`, maxHeight: "86vh", overflowY: "auto" }}>
+        <h3 style={{ margin: "0 0 4px", color: CORES.azul }}>Notificações por e-mail</h3>
+        <p style={{ fontSize: 12, color: CORES.cinza, margin: "0 0 14px" }}>
+          {todosAutomaticos
+            ? "E-mails enviados automaticamente pela sua conta Microsoft."
+            : "Sem o login Microsoft configurado pela TI, o envio não é automático: clique em cada botão abaixo para abrir a mensagem pronta no seu aplicativo de e-mail e enviá-la."}
+        </p>
+        {info.resultados.map((m, i) => (
+          <div key={i} style={{ background: CORES.cinzaClaro, borderRadius: 8, padding: 12, fontSize: 13, color: CORES.azul, marginBottom: 10 }}>
+            <div style={{ fontWeight: 700 }}>{m.rotulo}</div>
+            <div style={{ fontSize: 12, color: CORES.cinza, margin: "2px 0 6px" }}>Para: {m.para.join(", ")}</div>
+            <div style={{ fontSize: 12.5, fontStyle: "italic", marginBottom: 8 }}>Assunto: {m.assunto}</div>
+            {m.enviado ? (
+              <span style={{ color: "seagreen", fontWeight: 700, fontSize: 13 }}>Enviado automaticamente ✓ (comunicado no padrão Aura)</span>
+            ) : (
+              <a href={linkMailto(m)} style={{ textDecoration: "none" }}>
+                <Botao tipo="laranja" style={{ padding: "6px 14px", fontSize: 13 }}>✉ Abrir e-mail pronto para envio</Botao>
+              </a>
+            )}
+            {m.corpoHtml && (
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ cursor: "pointer", fontSize: 12.5, color: CORES.azul, fontWeight: 600 }}>👁 Visualizar comunicado (layout do e-mail)</summary>
+                <iframe srcDoc={m.corpoHtml} title={"comunicado" + i}
+                  style={{ width: "100%", height: 360, border: `1px solid ${CORES.cinza}`, borderRadius: 6, background: "#fff", marginTop: 6 }} />
+              </details>
+            )}
+          </div>
+        ))}
+        <div style={{ textAlign: "right" }}>
+          <Botao onClick={aoFechar}>Fechar</Botao>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Autocomplete de materiais ---------------- */
+const semAcento = (s) => (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+function CampoBuscaMaterial({ valor, aoMudar, aoEscolher, materiais, campo, placeholder, desabilitado }) {
+  const [aberto, setAberto] = useState(false);
+  const [mostrarTodos, setMostrarTodos] = useState(false); // seta ▼ = lista completa, mesmo com texto no campo
+  const [pos, setPos] = useState(null); // posição fixa do dropdown (evita corte pela rolagem da tabela)
+  const ref = useRef(null);
+  const inputRef = useRef(null);
+
+  const sugestoes = useMemo(() => {
+    const v = semAcento(valor).trim();
+    const ordenados = [...materiais].sort((a, b) =>
+      campo === "codigo" ? String(a.codigo).localeCompare(String(b.codigo)) : String(a.descricao).localeCompare(String(b.descricao))
+    );
+    if (!v || mostrarTodos) return ordenados; // lista completa (escolha em lista)
+    const palavras = v.split(/\s+/); // busca por todas as palavras digitadas, em qualquer ordem
+    const filtrados = ordenados.filter((m) => {
+      const alvo = semAcento(m.codigo) + " " + semAcento(m.descricao);
+      return palavras.every((p) => alvo.includes(p));
+    });
+    // Prioridade: 1º) descrição/código COMEÇA com o texto digitado; 2º) apenas contém
+    const comeca = (m) => semAcento(campo === "codigo" ? m.codigo : m.descricao).startsWith(v);
+    return [...filtrados.filter(comeca), ...filtrados.filter((m) => !comeca(m))];
+  }, [valor, materiais, campo, mostrarTodos]);
+
+  const calcularPos = () => {
+    if (!inputRef.current) return;
+    const r = inputRef.current.getBoundingClientRect();
+    const abaixo = window.innerHeight - r.bottom;
+    setPos({
+      left: Math.max(8, Math.min(r.left, window.innerWidth - 340)),
+      largura: Math.max(r.width, 320),
+      ...(abaixo < 240 && r.top > 260 ? { bottom: window.innerHeight - r.top + 2 } : { top: r.bottom + 2 }),
+    });
+  };
+
+  const abrir = (todos) => {
+    if (desabilitado) return;
+    if (todos !== undefined) setMostrarTodos(todos);
+    calcularPos();
+    setAberto(true);
+  };
+
+  useEffect(() => {
+    if (!aberto) return;
+    const fora = (e) => { if (ref.current && !ref.current.contains(e.target)) setAberto(false); };
+    const reposicionar = () => calcularPos();
+    document.addEventListener("mousedown", fora);
+    window.addEventListener("scroll", reposicionar, true);
+    window.addEventListener("resize", reposicionar);
+    return () => {
+      document.removeEventListener("mousedown", fora);
+      window.removeEventListener("scroll", reposicionar, true);
+      window.removeEventListener("resize", reposicionar);
+    };
+  }, [aberto]);
+
+  const estiloDropdown = pos ? {
+    position: "fixed", left: pos.left, width: pos.largura, top: pos.top, bottom: pos.bottom,
+    background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 6, zIndex: 60,
+    boxShadow: "0 6px 16px rgba(45,61,112,.2)", maxHeight: 300, overflowY: "auto",
+  } : { display: "none" };
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <input ref={inputRef} style={{ ...inputStyle, paddingRight: 26 }} value={valor || ""} placeholder={placeholder} disabled={desabilitado}
+        onChange={(e) => { aoMudar(e.target.value); setMostrarTodos(false); calcularPos(); setAberto(true); }}
+        onFocus={() => abrir()} />
+      <span onClick={() => (aberto ? setAberto(false) : abrir(true))}
+        style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", color: CORES.cinza, fontSize: 11, cursor: desabilitado ? "default" : "pointer", userSelect: "none" }}
+        title="Abrir lista de materiais">▼</span>
+      {aberto && sugestoes.length > 0 && (
+        <div style={estiloDropdown}>
+          {sugestoes.slice(0, 150).map((m) => (
+            <div key={m.codigo + m.descricao} onMouseDown={(e) => { e.preventDefault(); aoEscolher(m); setAberto(false); setMostrarTodos(false); }}
+              style={{ padding: "8px 10px", fontSize: 13, color: CORES.azul, cursor: "pointer", borderBottom: `1px solid ${CORES.cinzaClaro}` }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = CORES.cinzaClaro)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "#fff")}>
+              <strong>{m.codigo}</strong> — {m.descricao} <span style={{ color: CORES.cinza }}>({m.unidade})</span>
+            </div>
+          ))}
+          <div style={{ padding: "6px 10px", fontSize: 11.5, color: CORES.cinza, background: CORES.cinzaClaro, position: "sticky", bottom: 0 }}>
+            {sugestoes.length > 150 ? `Mostrando 150 de ${sugestoes.length} itens — continue digitando para refinar` : `${sugestoes.length} ${sugestoes.length === 1 ? "item encontrado" : "itens encontrados"}`}
+          </div>
+        </div>
+      )}
+      {aberto && sugestoes.length === 0 && (
+        <div style={{ ...estiloDropdown, padding: "8px 10px", fontSize: 12.5, color: CORES.cinza }}>
+          Item não encontrado na base. Para comprar um item novo, solicite antes a inclusão dele em <strong>Solicitação de Cadastros</strong>.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   TELA: Solicitação de Compras
+   ============================================================ */
+const statusDe = (c) => (c.concluido ? "Concluído" : c.cancelado ? "Cancelado" : "Pendente");
+
+const linhaVazia = () => ({ codigo: "", descricao: "", quantidade: "", unidade: "", centroCusto: "", contaContabil: "", capex: false, nomeCapex: "", observacoes: "" });
+
+function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
+  const [linhas, setLinhas] = useState([linhaVazia()]);
+  const [editando, setEditando] = useState(null); // item em edição (registro salvo)
+  const [fornEsp, setFornEsp] = useState(false);
+  const [fornEspNome, setFornEspNome] = useState("");
+  const [fCod, setFCod] = useState("");
+  const [fDesc, setFDesc] = useState("");
+  const [fStatus, setFStatus] = useState("Todos");
+
+  // 1.2 — sempre que uma linha for preenchida, gerar a próxima
+  useEffect(() => {
+    const u = linhas[linhas.length - 1];
+    if (u && (u.codigo || u.descricao)) setLinhas((ls) => [...ls, linhaVazia()]);
+  }, [linhas]);
+
+  const mudar = (i, campo, valor) =>
+    setLinhas((ls) => ls.map((l, j) => (j === i ? { ...l, [campo]: valor } : l)));
+
+  const escolherMaterial = (i, m) =>
+    setLinhas((ls) => ls.map((l, j) => (j === i ? { ...l, codigo: m.codigo, descricao: m.descricao, unidade: l.unidade || m.unidade } : l)));
+
+  const removerLinha = (i) => setLinhas((ls) => (ls.length > 1 ? ls.filter((_, j) => j !== i) : ls));
+
+  const buscarNaBase = (l) => {
+    const cod = semAcento(l.codigo).trim();
+    const desc = semAcento(l.descricao).trim();
+    return dados.materiais.find((m) => (cod && semAcento(m.codigo) === cod) || (desc && semAcento(m.descricao) === desc)) || null;
+  };
+
+  const enviar = async () => {
+    const preenchidas = linhas.filter((l) => l.codigo || l.descricao || l.quantidade || l.centroCusto || l.contaContabil);
+    if (preenchidas.length === 0) { avisar("Preencha ao menos uma linha."); return; }
+    const semItem = preenchidas.find((l) => !l.codigo && !l.descricao);
+    if (semItem) { avisar("Cada linha precisa de Cód. Item OU Descrição do Item (campo obrigatório)."); return; }
+    // 1.4 — o item precisa existir na base de materiais cadastrados
+    const foraDaBase = preenchidas.filter((l) => !buscarNaBase(l));
+    if (foraDaBase.length > 0) {
+      avisar(
+        "Os itens abaixo não existem na base de materiais:\n\n" +
+        foraDaBase.map((l) => `• ${l.codigo || l.descricao}`).join("\n") +
+        "\n\nPara comprar um item novo, primeiro solicite a inclusão dele na tela de Solicitação de Cadastros."
+      );
+      return;
+    }
+    const capexSemCodigo = preenchidas.find((l) => l.capex && !l.nomeCapex.trim());
+    if (capexSemCodigo) { avisar("Linhas marcadas como Capex precisam do Código Capex preenchido."); return; }
+    if (fornEsp && !fornEspNome.trim()) { avisar("Você marcou Fornecedor Específico: informe o nome do fornecedor."); return; }
+    const dataHora = agoraStr();
+    const novos = preenchidas.map((l) => {
+      const m = buscarNaBase(l); // complementa código ↔ descrição pela base oficial
+      return { id: uid(), solicitante: usuario.nome, email: usuario.email, dataHora, ...l, codigo: m.codigo, descricao: m.descricao, unidade: l.unidade || m.unidade, observacoes: (l.observacoes || "").trim(), fornecedorEspecifico: fornEsp ? fornEspNome.trim() : "", concluido: false };
+    });
+    let nd = { ...dados, compras: [...dados.compras, ...novos] };
+    const logDetalhe = novos.map((n) => `${n.codigo} — ${n.descricao} (qtd ${n.quantidade || "?"} ${n.unidade || ""}; CC ${n.centroCusto || "-"}; Conta ${n.contaContabil || "-"})`).join(" | ");
+    nd = comLog(nd, usuario, "Compra", `Criou solicitação de compra (${novos.length} ${novos.length > 1 ? "itens" : "item"})`, logDetalhe, novos.map((n) => n.id).join(","));
+    setDados(nd); await salvarDados(nd);
+    setLinhas([linhaVazia()]); setFornEsp(false); setFornEspNome("");
+    const resumo = novos.map((n) => `• ${n.codigo} — ${n.descricao} | ${n.quantidade || "?"} ${n.unidade || ""} | CC ${n.centroCusto || "-"} | Conta ${n.contaContabil || "-"}${n.capex ? ` | Capex ${n.nomeCapex}` : ""}${n.fornecedorEspecifico ? ` | Fornecedor específico: ${n.fornecedorEspecifico}` : ""}${n.observacoes ? ` | Obs: ${n.observacoes}` : ""}`).join("\n");
+    // Colunas do comunicado (admin): Solicitante, Item, Qtd, Centro de Custo, Conta Contábil e Código Capex
+    const tabela = {
+      cabecalhos: ["Solicitante", "Cód Mat", "Descr Material", "Quantidade", "UM", "Centro de Custo", "Conta Contábil", "Capex", "Forn. Específico", "Obs."],
+      linhas: novos.map((n) => [n.solicitante, n.codigo, n.descricao, n.quantidade, n.unidade, n.centroCusto, n.contaContabil, n.capex ? (n.nomeCapex || "Sim") : "—", n.fornecedorEspecifico || "—", n.observacoes || "—"]),
+    };
+    notificarSolicitacao("Compra", usuario, nd, resumo, dataHora, tabela);
+  };
+
+  const salvarEdicao = async () => {
+    if (!editando.codigo && !editando.descricao) { avisar("Cód. Item OU Descrição é obrigatório."); return; }
+    const m = buscarNaBase(editando);
+    if (!m) { avisar("Este item não existe na base de materiais. Solicite a inclusão dele na tela de Solicitação de Cadastros."); return; }
+    if (editando.capex && !(editando.nomeCapex || "").trim()) { avisar("Item marcado como Capex precisa do Código Capex preenchido."); return; }
+    const corrigido = { ...editando, codigo: m.codigo, descricao: m.descricao, unidade: editando.unidade || m.unidade };
+    let nd = { ...dados, compras: dados.compras.map((c) => (c.id === editando.id ? corrigido : c)) };
+    nd = comLog(nd, usuario, "Compra", "Editou solicitação de compra", `${corrigido.codigo} — ${corrigido.descricao}`, editando.id);
+    setDados(nd); await salvarDados(nd); setEditando(null);
+  };
+
+  const removerItem = async (id) => {
+    const alvo = dados.compras.find((c) => c.id === id);
+    if (alvo && (alvo.concluido || alvo.cancelado)) { avisar("Item concluído ou cancelado não pode ser modificado."); return; }
+    avisar("Solicitação removida.");
+    let nd = { ...dados, compras: dados.compras.filter((c) => c.id !== id) };
+    nd = comLog(nd, usuario, "Compra", "Removeu solicitação de compra", alvo ? `${alvo.codigo || ""} — ${alvo.descricao || ""}` : "", id);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  const minhas = dados.compras.filter((c) =>
+    c.email === usuario.email &&
+    String(c.codigo || "").toLowerCase().includes(fCod.toLowerCase()) &&
+    semAcento(c.descricao).includes(semAcento(fDesc)) &&
+    (fStatus === "Todos" || statusDe(c) === fStatus)
+  );
+  const th = { padding: "8px 8px", fontSize: 11.5, textTransform: "uppercase", letterSpacing: ".04em", color: "#fff", background: CORES.azul, textAlign: "left", whiteSpace: "nowrap" };
+  const td = { padding: 6, borderBottom: `1px solid ${CORES.cinzaClaro}`, verticalAlign: "top" };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      <Cartao style={{ position: "relative" }}>
+        <h2 style={{ margin: "0 0 2px", color: CORES.azul }}>Solicitação de Compras</h2>
+        <p style={{ margin: "0 0 6px", fontSize: 13, color: CORES.cinza }}>
+          Solicitante: <strong style={{ color: CORES.azul }}>{usuario.nome}</strong> · Cód. Item ou Descrição preenchem um ao outro automaticamente.
+        </p>
+        <p style={{ margin: "0 0 16px", fontSize: 12.5, color: dados.materiaisAtualizadoEm ? CORES.cinza : CORES.laranja }}>
+          Base de materiais: <strong>{dados.materiais.length}</strong> itens
+          {dados.materiaisAtualizadoEm
+            ? ` (arquivo de ${dados.materiaisAtualizadoEm})`
+            : " — apenas exemplos! Carregue o MateriaisDeCompra.csv em “Atualização de Materiais” para buscar nos itens reais."}
+        </p>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 900 }}>
+            <thead><tr>
+              <th style={th}>Solicitante</th><th style={th}>Cód. Item •</th><th style={th}>Descrição do Item •</th>
+              <th style={th}>Qtd.</th><th style={th}>Un. Medida</th><th style={th}>Centro de Custo</th><th style={th}>Conta Contábil</th>
+              <th style={{ ...th, textAlign: "center" }}>Capex</th><th style={th}>Código Capex</th><th style={th}>Observações</th><th style={th}></th>
+            </tr></thead>
+            <tbody>
+              {linhas.map((l, i) => (
+                <tr key={i}>
+                  <td style={td}><input style={{ ...inputStyle, background: CORES.cinzaClaro, color: CORES.cinza }} value={usuario.nome} disabled /></td>
+                  <td style={{ ...td, minWidth: 120 }}>
+                    <CampoBuscaMaterial campo="codigo" valor={l.codigo} materiais={dados.materiais} placeholder="Buscar código…"
+                      aoMudar={(v) => mudar(i, "codigo", v)} aoEscolher={(m) => escolherMaterial(i, m)} />
+                  </td>
+                  <td style={{ ...td, minWidth: 220 }}>
+                    <CampoBuscaMaterial campo="descricao" valor={l.descricao} materiais={dados.materiais} placeholder="Buscar descrição…"
+                      aoMudar={(v) => mudar(i, "descricao", v)} aoEscolher={(m) => escolherMaterial(i, m)} />
+                  </td>
+                  <td style={{ ...td, width: 72, minWidth: 64 }}><input style={{ ...inputStyle, padding: "8px 6px", textAlign: "center", minWidth: 52 }} type="number" min="0" value={l.quantidade} onChange={(e) => mudar(i, "quantidade", e.target.value)} /></td>
+                  <td style={{ ...td, width: 86, minWidth: 76 }}><input style={{ ...inputStyle, padding: "8px 6px", textAlign: "center", minWidth: 64 }} value={l.unidade} onChange={(e) => mudar(i, "unidade", e.target.value)} title={l.unidade || ""} /></td>
+                  <td style={{ ...td, width: 130 }}><input style={inputStyle} value={l.centroCusto} onChange={(e) => mudar(i, "centroCusto", e.target.value)} /></td>
+                  <td style={{ ...td, width: 130 }}><input style={inputStyle} value={l.contaContabil} onChange={(e) => mudar(i, "contaContabil", e.target.value)} /></td>
+                  <td style={{ ...td, textAlign: "center", width: 54 }}>
+                    <input type="checkbox" checked={!!l.capex} title="Marcar se a compra é Capex"
+                      onChange={(e) => setLinhas((ls) => ls.map((x, j) => (j === i ? { ...x, capex: e.target.checked, nomeCapex: e.target.checked ? x.nomeCapex : "" } : x)))}
+                      style={{ width: 17, height: 17, accentColor: CORES.laranja, cursor: "pointer", marginTop: 8 }} />
+                  </td>
+                  <td style={{ ...td, width: 130 }}>
+                    <input style={{ ...inputStyle, background: l.capex ? "#fff" : CORES.cinzaClaro }} value={l.nomeCapex} disabled={!l.capex}
+                      placeholder={l.capex ? "Código Capex" : "—"} onChange={(e) => mudar(i, "nomeCapex", e.target.value)} />
+                  </td>
+                  <td style={{ ...td, minWidth: 170 }}>
+                    <input style={inputStyle} value={l.observacoes} placeholder="Obs. deste item…"
+                      onChange={(e) => mudar(i, "observacoes", e.target.value)} title={l.observacoes || ""} />
+                  </td>
+                  <td style={td}>{linhas.length > 1 && i < linhas.length - 1 ? (
+                    <button onClick={() => removerLinha(i)} title="Excluir linha" style={{ border: "none", background: "none", color: CORES.laranja, cursor: "pointer", fontSize: 16 }}>✕</button>) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 700, color: CORES.azul, cursor: "pointer", whiteSpace: "nowrap" }}>
+            <input type="checkbox" checked={fornEsp}
+              onChange={(e) => { setFornEsp(e.target.checked); if (!e.target.checked) setFornEspNome(""); }}
+              style={{ width: 17, height: 17, accentColor: CORES.laranja }} />
+            Fornecedor Específico
+          </label>
+          <input style={{ ...inputStyle, maxWidth: 420, background: fornEsp ? "#fff" : CORES.cinzaClaro }}
+            disabled={!fornEsp} value={fornEspNome} onChange={(e) => setFornEspNome(e.target.value)}
+            placeholder={fornEsp ? "Nome do fornecedor exigido para esta compra" : "Marque a opção para informar o fornecedor"} />
+        </div>
+        <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
+          <Botao tipo="laranja" onClick={enviar}>Enviar solicitação e notificar por e-mail</Botao>
+        </div>
+      </Cartao>
+
+      <Cartao>
+        <h3 style={{ margin: "0 0 12px", color: CORES.azul }}>Minhas solicitações de compra</h3>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+          <div style={{ flex: "1 1 150px" }}><Campo label="Filtro: Código"><input style={inputStyle} value={fCod} onChange={(e) => setFCod(e.target.value)} placeholder="Cód. do item…" /></Campo></div>
+          <div style={{ flex: "2 1 220px" }}><Campo label="Filtro: Item"><input style={inputStyle} value={fDesc} onChange={(e) => setFDesc(e.target.value)} placeholder="Descrição do item…" /></Campo></div>
+          <div style={{ flex: "1 1 150px" }}><Campo label="Filtro: Status">
+            <select style={inputStyle} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+              <option>Todos</option><option>Pendente</option><option>Concluído</option><option>Cancelado</option>
+            </select>
+          </Campo></div>
+        </div>
+        {minhas.length === 0 ? <p style={{ color: CORES.cinza, fontSize: 14 }}>Nenhuma solicitação encontrada. Ajuste os filtros ou envie uma nova pela tabela acima.</p> : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13.5, color: CORES.azul }}>
+              <thead><tr>{["Data/Hora", "Cód.", "Descrição", "Qtd.", "Un.", "C. Custo", "Conta", "Capex", "Forn. Esp.", "Obs.", "Status", "Ações"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {minhas.map((c) => (
+                  <tr key={c.id} style={{ opacity: c.concluido || c.cancelado ? 0.6 : 1 }}>
+                    <td style={td}>{c.dataHora}</td><td style={td}>{c.codigo}</td><td style={td}>{c.descricao}</td>
+                    <td style={td}>{c.quantidade}</td><td style={td}>{c.unidade}</td><td style={td}>{c.centroCusto}</td><td style={td}>{c.contaContabil}</td><td style={td}>{c.capex ? (c.nomeCapex || "Sim") : "—"}</td><td style={{ ...td, maxWidth: 120 }} title={c.fornecedorEspecifico || ""}>{c.fornecedorEspecifico || "—"}</td><td style={{ ...td, maxWidth: 160 }} title={c.observacoes || ""}>{c.observacoes ? (c.observacoes.length > 34 ? c.observacoes.slice(0, 32) + "…" : c.observacoes) : "—"}</td>
+                    <td style={td}>{c.concluido ? <span style={{ color: "seagreen", fontWeight: 700 }} title={c.rc ? "RC: " + c.rc : ""}>Concluído 🔒{c.rc ? " · RC " + c.rc : ""}{c.comentarioAdmin && <div style={{ fontSize: 11.5, fontWeight: 400, color: CORES.azul, fontStyle: "italic", maxWidth: 220 }}>💬 {c.comentarioAdmin}</div>}</span> : c.cancelado ? <span style={{ color: CORES.laranja, fontWeight: 700 }}>Cancelado 🔒<div style={{ fontSize: 11.5, fontWeight: 400, color: CORES.cinza, fontStyle: "italic", maxWidth: 220 }}>Motivo: {c.justificativa || "não informado"}</div></span> : <span style={{ color: CORES.laranja }}>Pendente</span>}</td>
+                    <td style={{ ...td, whiteSpace: "nowrap" }}>
+                      <Botao tipo="contorno" disabled={c.concluido || c.cancelado} style={{ padding: "4px 10px", fontSize: 12, marginRight: 6 }} onClick={() => setEditando({ ...c })} title={c.concluido ? "Item concluído: bloqueado" : c.cancelado ? "Item cancelado: bloqueado" : "Editar"}>Editar</Botao>
+                      <Botao tipo="perigo" disabled={c.concluido || c.cancelado} style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => removerItem(c.id)} title={c.concluido ? "Item concluído: bloqueado" : c.cancelado ? "Item cancelado: bloqueado" : "Remover"}>Remover</Botao>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Cartao>
+
+      {editando && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(45,61,112,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "min(560px, 94%)", maxHeight: "88vh", overflowY: "auto" }}>
+            <h3 style={{ marginTop: 0, color: CORES.azul }}>Editar item</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <Campo label="Cód. Item" obrigatorio><CampoBuscaMaterial campo="codigo" valor={editando.codigo} materiais={dados.materiais} aoMudar={(v) => setEditando({ ...editando, codigo: v })} aoEscolher={(m) => setEditando({ ...editando, codigo: m.codigo, descricao: m.descricao, unidade: editando.unidade || m.unidade })} /></Campo>
+              <Campo label="Descrição" obrigatorio><CampoBuscaMaterial campo="descricao" valor={editando.descricao} materiais={dados.materiais} aoMudar={(v) => setEditando({ ...editando, descricao: v })} aoEscolher={(m) => setEditando({ ...editando, codigo: m.codigo, descricao: m.descricao, unidade: editando.unidade || m.unidade })} /></Campo>
+              <Campo label="Quantidade"><input style={inputStyle} type="number" value={editando.quantidade} onChange={(e) => setEditando({ ...editando, quantidade: e.target.value })} /></Campo>
+              <Campo label="Unidade de Medida"><input style={inputStyle} value={editando.unidade} onChange={(e) => setEditando({ ...editando, unidade: e.target.value })} /></Campo>
+              <Campo label="Centro de Custo"><input style={inputStyle} value={editando.centroCusto} onChange={(e) => setEditando({ ...editando, centroCusto: e.target.value })} /></Campo>
+              <Campo label="Conta Contábil"><input style={inputStyle} value={editando.contaContabil} onChange={(e) => setEditando({ ...editando, contaContabil: e.target.value })} /></Campo>
+              <Campo label="Capex">
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="checkbox" checked={!!editando.capex} style={{ width: 17, height: 17, accentColor: CORES.laranja }}
+                    onChange={(e) => setEditando({ ...editando, capex: e.target.checked, nomeCapex: e.target.checked ? editando.nomeCapex : "" })} />
+                  <input style={{ ...inputStyle, background: editando.capex ? "#fff" : CORES.cinzaClaro }} disabled={!editando.capex}
+                    placeholder={editando.capex ? "Código Capex" : "—"} value={editando.nomeCapex || ""}
+                    onChange={(e) => setEditando({ ...editando, nomeCapex: e.target.value })} />
+                </div>
+              </Campo>
+              <Campo label="Fornecedor Específico">
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="checkbox" checked={!!editando.fornecedorEspecifico || editando.__fe === true}
+                    style={{ width: 17, height: 17, accentColor: CORES.laranja }}
+                    onChange={(e) => setEditando({ ...editando, __fe: e.target.checked, fornecedorEspecifico: e.target.checked ? editando.fornecedorEspecifico : "" })} />
+                  <input style={{ ...inputStyle, background: (editando.fornecedorEspecifico || editando.__fe) ? "#fff" : CORES.cinzaClaro }}
+                    disabled={!(editando.fornecedorEspecifico || editando.__fe)}
+                    placeholder="Nome do fornecedor" value={editando.fornecedorEspecifico || ""}
+                    onChange={(e) => setEditando({ ...editando, fornecedorEspecifico: e.target.value })} />
+                </div>
+              </Campo>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <Campo label="Observações">
+                  <textarea style={{ ...inputStyle, minHeight: 56, resize: "vertical", fontFamily: "inherit" }}
+                    value={editando.observacoes || ""} onChange={(e) => setEditando({ ...editando, observacoes: e.target.value })} />
+                </Campo>
+              </div>
+            </div>
+            <div style={{ marginTop: 18, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <Botao tipo="contorno" onClick={() => setEditando(null)}>Cancelar</Botao>
+              <Botao onClick={salvarEdicao}>Salvar alterações</Botao>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   TELA: Solicitação de Cadastros
+   ============================================================ */
+const cadastroVazio = () => ({
+  descricao: "", unidade: "", link: "", tipo: "", fornecedor: "", partNumber: "", capex: false, nomeCapex: "", anexo: null,
+  observacoes: "", fornEsp: false, fornecedorEspecifico: "",
+  estoqueMin: "", estoqueMax: "", consumoMensal: "", estoqueDesejado: "", quantidade: "", centroCusto: "", contaContabil: "",
+});
+
+function TelaCadastros({ dados, setDados, usuario, notificarSolicitacao }) {
+  const [f, setF] = useState(cadastroVazio());
+  const [editId, setEditId] = useState(null);
+  const [fDesc, setFDesc] = useState("");
+  const [fTipo, setFTipo] = useState("Todos");
+  const [fStatus, setFStatus] = useState("Todos");
+
+  const parte1Ok = f.descricao.trim() && f.unidade.trim() && f.tipo;
+  const set = (campo, v) => setF((x) => ({ ...x, [campo]: v }));
+
+  // Anexo: apenas PDF ou DOC/DOCX
+  const anexoRef = useRef(null);
+  const [arquivoAnexo, setArquivoAnexo] = useState(null); // File aguardando upload (modo Microsoft)
+  const selecionarAnexo = (e) => {
+    const arq = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!arq) return;
+    const ext = arq.name.toLowerCase().split(".").pop();
+    if (!["pdf", "doc", "docx"].includes(ext)) { avisar("Apenas arquivos PDF ou DOC/DOCX são aceitos como anexo."); return; }
+    const limiteMB = AUTENTICACAO_REAL ? 4 : 2;
+    if (arq.size > limiteMB * 1024 * 1024) { avisar(`O anexo deve ter no máximo ${limiteMB} MB${AUTENTICACAO_REAL ? "" : " no modo demonstração"}.`); return; }
+    if (AUTENTICACAO_REAL) {
+      setArquivoAnexo(arq);
+      set("anexo", { nome: arq.name, pendente: true });
+    } else {
+      const leitor = new FileReader();
+      leitor.onload = () => set("anexo", { nome: arq.name, dataUrl: leitor.result });
+      leitor.onerror = () => avisar("Não foi possível ler o arquivo do anexo.");
+      leitor.readAsDataURL(arq);
+    }
+  };
+  const removerAnexo = () => { setArquivoAnexo(null); set("anexo", null); };
+
+  const enviar = async () => {
+    if (!parte1Ok) { avisar("Preencha a Parte 1 (Descrição, Unidade e Tipo de Cadastro)."); return; }
+    if (f.tipo === "Estoque" && (!f.estoqueMin || !f.estoqueMax || !f.consumoMensal)) { avisar("Preencha Estoque Mínimo, Máximo e Consumo mensal."); return; }
+    if (f.tipo === "Estoque Sazonal" && (!f.estoqueDesejado || !f.consumoMensal)) { avisar("Preencha Estoque Desejado e Consumo mensal."); return; }
+    if (f.tipo === "Débito Direto" && (!f.quantidade || !f.centroCusto || !f.contaContabil)) { avisar("Preencha Quantidade, Centro de Custo e Conta Contábil."); return; }
+    if (f.capex && !f.nomeCapex.trim()) { avisar("Cadastro marcado como Capex precisa do Código Capex preenchido."); return; }
+    if ((f.tipo === "Débito Direto" || f.tipo === "Estoque Sazonal") && f.fornEsp && !f.fornecedorEspecifico.trim()) { avisar("Você marcou Fornecedor Específico: informe o nome do fornecedor."); return; }
+
+    // Anexo pendente (modo Microsoft): envia ao SharePoint antes de gravar
+    let anexoFinal = f.anexo || null;
+    if (AUTENTICACAO_REAL && arquivoAnexo) {
+      try { anexoFinal = await enviarAnexoSharePoint(arquivoAnexo); }
+      catch (e) { avisar("Falha ao enviar o anexo ao SharePoint. Verifique a conexão e tente novamente."); return; }
+    }
+    const fEfetivo = f.tipo === "Estoque" ? { ...f, fornEsp: false, fornecedorEspecifico: "" } : f;
+    let nd, resumo = "", dataHora = agoraStr();
+    if (editId) {
+      nd = { ...dados, cadastros: dados.cadastros.map((c) => (c.id === editId ? { ...c, ...fEfetivo, anexo: anexoFinal } : c)) };
+    } else {
+      const novo = { id: uid(), solicitante: usuario.nome, email: usuario.email, dataHora, ...fEfetivo, anexo: anexoFinal, concluido: false };
+      resumo = `• ${novo.descricao} — ${novo.unidade} | Tipo: ${novo.tipo}${novo.fornecedor ? ` | Fornecedor: ${novo.fornecedor}` : ""}${novo.fornecedorEspecifico ? ` | Fornecedor específico: ${novo.fornecedorEspecifico}` : ""}${novo.capex ? ` | Capex ${novo.nomeCapex}` : ""}${novo.observacoes ? ` | Obs: ${novo.observacoes}` : ""}`;
+      nd = { ...dados, cadastros: [...dados.cadastros, novo] };
+    }
+    nd = comLog(nd, usuario, "Cadastro", editId ? "Editou solicitação de cadastro" : "Criou solicitação de cadastro", `${fEfetivo.descricao || ""} — ${fEfetivo.unidade || ""} | Tipo: ${fEfetivo.tipo || ""}`, editId || (nd.cadastros[nd.cadastros.length - 1] || {}).id);
+    setDados(nd); await salvarDados(nd);
+    setF(cadastroVazio()); setArquivoAnexo(null); const eraEdicao = !!editId; setEditId(null);
+    if (!eraEdicao) {
+      const c = nd.cadastros[nd.cadastros.length - 1];
+      const tabela = {
+        cabecalhos: ["Solicitante", "Descrição do Item", "UM", "Tipo de Cadastro", "Fornecedor", "Part Number", "Capex", "Forn. Específico", "Anexo", "Obs."],
+        linhas: [[c.solicitante, c.descricao, c.unidade, c.tipo, c.fornecedor, c.partNumber, c.capex ? (c.nomeCapex || "Sim") : "—", c.fornecedorEspecifico || "—", c.anexo ? c.anexo.nome : "—", c.observacoes || "—"]],
+      };
+      notificarSolicitacao("Cadastro", usuario, nd, resumo, dataHora, tabela);
+    }
+  };
+
+  const editar = (c) => { setEditId(c.id); setF({ ...cadastroVazio(), ...c }); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const remover = async (id) => {
+    const alvo = dados.cadastros.find((c) => c.id === id);
+    if (alvo && (alvo.concluido || alvo.cancelado)) { avisar("Item concluído ou cancelado não pode ser modificado."); return; }
+    avisar("Solicitação de cadastro removida.");
+    let nd = { ...dados, cadastros: dados.cadastros.filter((c) => c.id !== id) };
+    nd = comLog(nd, usuario, "Cadastro", "Removeu solicitação de cadastro", alvo ? `${alvo.descricao || ""} (${alvo.tipo || ""})` : "", id);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  const exportarExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const tipos = ["Estoque", "Estoque Sazonal", "Débito Direto"];
+    tipos.forEach((t) => {
+      const regs = dados.cadastros.filter((c) => c.tipo === t);
+      let linhas;
+      if (t === "Estoque") linhas = regs.map((c) => ({ "Solicitante": c.solicitante, "Data/Hora": c.dataHora, "Descrição": c.descricao, "Unidade": c.unidade, "Link Ref.": c.link, "Fornecedor": c.fornecedor, "Part Number": c.partNumber, "Capex": c.capex ? (c.nomeCapex || "Sim") : "Não", "Anexo": c.anexo ? c.anexo.nome : "", "Observações": c.observacoes || "", "Estoque Mínimo": c.estoqueMin, "Estoque Máximo": c.estoqueMax, "Consumo Mensal": c.consumoMensal, "Concluído": c.concluido ? "Sim" : "Não" }));
+      else if (t === "Estoque Sazonal") linhas = regs.map((c) => ({ "Solicitante": c.solicitante, "Data/Hora": c.dataHora, "Descrição": c.descricao, "Unidade": c.unidade, "Link Ref.": c.link, "Fornecedor": c.fornecedor, "Part Number": c.partNumber, "Capex": c.capex ? (c.nomeCapex || "Sim") : "Não", "Anexo": c.anexo ? c.anexo.nome : "", "Fornecedor Específico": c.fornecedorEspecifico || "", "Observações": c.observacoes || "", "Estoque Desejado": c.estoqueDesejado, "Consumo Mensal": c.consumoMensal, "Concluído": c.concluido ? "Sim" : "Não" }));
+      else linhas = regs.map((c) => ({ "Solicitante": c.solicitante, "Data/Hora": c.dataHora, "Descrição": c.descricao, "Unidade": c.unidade, "Link Ref.": c.link, "Fornecedor": c.fornecedor, "Part Number": c.partNumber, "Capex": c.capex ? (c.nomeCapex || "Sim") : "Não", "Anexo": c.anexo ? c.anexo.nome : "", "Fornecedor Específico": c.fornecedorEspecifico || "", "Observações": c.observacoes || "", "Quantidade": c.quantidade, "Centro de Custo": c.centroCusto, "Conta Contábil": c.contaContabil, "Concluído": c.concluido ? "Sim" : "Não" }));
+      const ws = XLSX.utils.json_to_sheet(linhas.length ? linhas : [{}]);
+      XLSX.utils.book_append_sheet(wb, ws, t.replace("é", "e"));
+    });
+    XLSX.writeFile(wb, "Solicitacoes_de_Cadastro.xlsx");
+  };
+
+  const minhas = dados.cadastros.filter((c) =>
+    c.email === usuario.email &&
+    semAcento(c.descricao).includes(semAcento(fDesc)) &&
+    (fTipo === "Todos" || c.tipo === fTipo) &&
+    (fStatus === "Todos" || statusDe(c) === fStatus)
+  );
+  const th = { padding: "8px", fontSize: 11.5, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left", whiteSpace: "nowrap" };
+  const td = { padding: 6, borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 13.5, color: CORES.azul };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      <Cartao style={{ position: "relative" }}>
+        <h2 style={{ margin: "0 0 2px", color: CORES.azul }}>{editId ? "Editar Cadastro" : "Solicitação de Cadastros"}</h2>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: CORES.cinza }}>Campos marcados com <span style={{ color: CORES.laranja }}>•</span> são obrigatórios. A Parte 2 é liberada conforme o Tipo de Cadastro.</p>
+
+        <div style={{ borderLeft: `3px solid ${CORES.laranja}`, paddingLeft: 14, marginBottom: 8 }}>
+          <strong style={{ color: CORES.azul, fontSize: 13, textTransform: "uppercase", letterSpacing: ".05em" }}>Parte 1 — Dados do item</strong>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+          <Campo label="Solicitante"><input style={{ ...inputStyle, background: CORES.cinzaClaro, color: CORES.cinza }} value={usuario.nome} disabled /></Campo>
+          <Campo label="Descrição do Item" obrigatorio><input style={inputStyle} value={f.descricao} onChange={(e) => set("descricao", e.target.value)} /></Campo>
+          <Campo label="Unidade de Medida" obrigatorio><input style={inputStyle} value={f.unidade} onChange={(e) => set("unidade", e.target.value)} /></Campo>
+          <Campo label="Link de Referência"><input style={inputStyle} value={f.link} onChange={(e) => set("link", e.target.value)} placeholder="https://…" /></Campo>
+          <Campo label="Tipo de Cadastro" obrigatorio>
+            <select style={inputStyle} value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>
+              <option value="">Selecione…</option>
+              <option>Estoque</option>
+              <option>Débito Direto</option>
+              <option>Estoque Sazonal</option>
+            </select>
+          </Campo>
+          <Campo label="Fornecedor"><input style={inputStyle} value={f.fornecedor} onChange={(e) => set("fornecedor", e.target.value)} /></Campo>
+          <Campo label="Part Number / Cód. Fornecedor"><input style={inputStyle} value={f.partNumber} onChange={(e) => set("partNumber", e.target.value)} /></Campo>
+          <Campo label="Capex">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" checked={!!f.capex} style={{ width: 17, height: 17, accentColor: CORES.laranja }}
+                onChange={(e) => setF((x) => ({ ...x, capex: e.target.checked, nomeCapex: e.target.checked ? x.nomeCapex : "" }))} />
+              <input style={{ ...inputStyle, background: f.capex ? "#fff" : CORES.cinzaClaro }} disabled={!f.capex}
+                placeholder={f.capex ? "Código Capex" : "—"} value={f.nomeCapex} onChange={(e) => set("nomeCapex", e.target.value)} />
+            </div>
+          </Campo>
+          <Campo label="Anexo (PDF ou DOC)">
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 37 }}>
+              <input ref={anexoRef} type="file" accept=".pdf,.doc,.docx" style={{ display: "none" }} onChange={selecionarAnexo} />
+              <Botao tipo="contorno" style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => anexoRef.current && anexoRef.current.click()}>
+                📎 {f.anexo ? "Trocar" : "Anexar"}
+              </Botao>
+              {f.anexo && (
+                <span style={{ fontSize: 12.5, color: CORES.azul, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.anexo.nome}>
+                  {f.anexo.nome}
+                </span>
+              )}
+              {f.anexo && (
+                <button onClick={removerAnexo} title="Remover anexo"
+                  style={{ border: "none", background: "none", color: CORES.laranja, cursor: "pointer", fontSize: 15, fontWeight: 700 }}>✕</button>
+              )}
+            </div>
+          </Campo>
+        </div>
+
+        <div style={{ marginTop: 24, borderLeft: `3px solid ${parte1Ok ? CORES.laranja : CORES.cinza}`, paddingLeft: 14, marginBottom: 8, opacity: parte1Ok ? 1 : 0.5 }}>
+          <strong style={{ color: CORES.azul, fontSize: 13, textTransform: "uppercase", letterSpacing: ".05em" }}>
+            Parte 2 — Parâmetros do tipo {f.tipo ? `“${f.tipo}”` : ""}
+          </strong>
+          {!parte1Ok && <div style={{ fontSize: 12, color: CORES.cinza }}>Preencha a Parte 1 para liberar esta seção.</div>}
+        </div>
+
+        {parte1Ok && f.tipo === "Estoque" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14 }}>
+            <Campo label="Estoque Mínimo" obrigatorio legenda="Considerar 30 dias de Lead Time"><input style={inputStyle} type="number" value={f.estoqueMin} onChange={(e) => set("estoqueMin", e.target.value)} /></Campo>
+            <Campo label="Estoque Máximo" obrigatorio><input style={inputStyle} type="number" value={f.estoqueMax} onChange={(e) => set("estoqueMax", e.target.value)} /></Campo>
+            <Campo label="Consumo Mensal" obrigatorio><input style={inputStyle} type="number" value={f.consumoMensal} onChange={(e) => set("consumoMensal", e.target.value)} /></Campo>
+          </div>
+        )}
+        {parte1Ok && f.tipo === "Estoque Sazonal" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14 }}>
+            <Campo label="Estoque Desejado" obrigatorio><input style={inputStyle} type="number" value={f.estoqueDesejado} onChange={(e) => set("estoqueDesejado", e.target.value)} /></Campo>
+            <Campo label="Consumo Mensal" obrigatorio><input style={inputStyle} type="number" value={f.consumoMensal} onChange={(e) => set("consumoMensal", e.target.value)} /></Campo>
+            <Campo label="Fornecedor Específico">
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={!!f.fornEsp} style={{ width: 17, height: 17, accentColor: CORES.laranja }}
+                  onChange={(e) => setF((x) => ({ ...x, fornEsp: e.target.checked, fornecedorEspecifico: e.target.checked ? x.fornecedorEspecifico : "" }))} />
+                <input style={{ ...inputStyle, background: f.fornEsp ? "#fff" : CORES.cinzaClaro }} disabled={!f.fornEsp}
+                  placeholder={f.fornEsp ? "Nome do fornecedor exigido" : "Marque para informar"}
+                  value={f.fornecedorEspecifico} onChange={(e) => set("fornecedorEspecifico", e.target.value)} />
+              </div>
+            </Campo>
+          </div>
+        )}
+        {parte1Ok && f.tipo === "Débito Direto" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14 }}>
+            <Campo label="Quantidade" obrigatorio><input style={inputStyle} type="number" value={f.quantidade} onChange={(e) => set("quantidade", e.target.value)} /></Campo>
+            <Campo label="Centro de Custo" obrigatorio><input style={inputStyle} value={f.centroCusto} onChange={(e) => set("centroCusto", e.target.value)} /></Campo>
+            <Campo label="Conta Contábil" obrigatorio><input style={inputStyle} value={f.contaContabil} onChange={(e) => set("contaContabil", e.target.value)} /></Campo>
+            <Campo label="Fornecedor Específico">
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={!!f.fornEsp} style={{ width: 17, height: 17, accentColor: CORES.laranja }}
+                  onChange={(e) => setF((x) => ({ ...x, fornEsp: e.target.checked, fornecedorEspecifico: e.target.checked ? x.fornecedorEspecifico : "" }))} />
+                <input style={{ ...inputStyle, background: f.fornEsp ? "#fff" : CORES.cinzaClaro }} disabled={!f.fornEsp}
+                  placeholder={f.fornEsp ? "Nome do fornecedor exigido" : "Marque para informar"}
+                  value={f.fornecedorEspecifico} onChange={(e) => set("fornecedorEspecifico", e.target.value)} />
+              </div>
+            </Campo>
+          </div>
+        )}
+
+        <div style={{ marginTop: 16, maxWidth: 720 }}>
+          <Campo label="Observações">
+            <textarea style={{ ...inputStyle, minHeight: 64, resize: "vertical", fontFamily: "inherit" }}
+              value={f.observacoes} onChange={(e) => set("observacoes", e.target.value)}
+              placeholder="Informações adicionais sobre este item (aplicação, urgência, referência…)" />
+          </Campo>
+        </div>
+        <div style={{ marginTop: 20, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Botao tipo="laranja" onClick={enviar}>{editId ? "Salvar alterações" : "Enviar solicitação e notificar por e-mail"}</Botao>
+          {editId && <Botao tipo="contorno" onClick={() => { setEditId(null); setF(cadastroVazio()); }}>Cancelar edição</Botao>}
+          <Botao tipo="contorno" onClick={exportarExcel}>Exportar Excel (abas por tipo)</Botao>
+        </div>
+      </Cartao>
+
+      <Cartao>
+        <h3 style={{ margin: "0 0 12px", color: CORES.azul }}>Minhas solicitações de cadastro</h3>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+          <div style={{ flex: "2 1 220px" }}><Campo label="Filtro: Item"><input style={inputStyle} value={fDesc} onChange={(e) => setFDesc(e.target.value)} placeholder="Descrição do item…" /></Campo></div>
+          <div style={{ flex: "1 1 160px" }}><Campo label="Filtro: Tipo">
+            <select style={inputStyle} value={fTipo} onChange={(e) => setFTipo(e.target.value)}>
+              <option>Todos</option><option>Estoque</option><option>Estoque Sazonal</option><option>Débito Direto</option>
+            </select>
+          </Campo></div>
+          <div style={{ flex: "1 1 150px" }}><Campo label="Filtro: Status">
+            <select style={inputStyle} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+              <option>Todos</option><option>Pendente</option><option>Concluído</option><option>Cancelado</option>
+            </select>
+          </Campo></div>
+        </div>
+        {minhas.length === 0 ? <p style={{ color: CORES.cinza, fontSize: 14 }}>Nenhum cadastro encontrado. Ajuste os filtros ou envie um novo acima.</p> : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <thead><tr>{["Data/Hora", "Descrição", "Un.", "Tipo", "Fornecedor", "Anexo", "Obs.", "Status", "Ações"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {minhas.map((c) => (
+                  <tr key={c.id} style={{ opacity: c.concluido || c.cancelado ? 0.6 : 1 }}>
+                    <td style={td}>{c.dataHora}</td><td style={td}>{c.descricao}</td><td style={td}>{c.unidade}</td>
+                    <td style={td}><span style={{ background: CORES.cinzaClaro, padding: "2px 8px", borderRadius: 10, fontSize: 12 }}>{c.tipo}</span></td>
+                    <td style={td}>{c.fornecedor}{c.fornecedorEspecifico && <div style={{ fontSize: 11, color: CORES.laranja, fontStyle: "italic" }} title={c.fornecedorEspecifico}>Específico: {c.fornecedorEspecifico}</div>}</td>
+                    <td style={td}><AnexoLink anexo={c.anexo} /></td>
+                    <td style={{ ...td, maxWidth: 150 }} title={c.observacoes || ""}>{c.observacoes ? (c.observacoes.length > 30 ? c.observacoes.slice(0, 28) + "…" : c.observacoes) : "—"}</td>
+                    <td style={td}>{c.concluido ? <span style={{ color: "seagreen", fontWeight: 700 }} title={c.rc ? "RC: " + c.rc : ""}>Concluído 🔒{c.rc ? " · RC " + c.rc : ""}</span> : c.cancelado ? <span style={{ color: CORES.laranja, fontWeight: 700 }}>Cancelado 🔒<div style={{ fontSize: 11.5, fontWeight: 400, color: CORES.cinza, fontStyle: "italic", maxWidth: 220 }}>Motivo: {c.justificativa || "não informado"}</div></span> : <span style={{ color: CORES.laranja }}>Pendente</span>}</td>
+                    <td style={{ ...td, whiteSpace: "nowrap" }}>
+                      <Botao tipo="contorno" disabled={c.concluido || c.cancelado} style={{ padding: "4px 10px", fontSize: 12, marginRight: 6 }} onClick={() => editar(c)}>Editar</Botao>
+                      <Botao tipo="perigo" disabled={c.concluido || c.cancelado} style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => remover(c.id)}>Remover</Botao>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Cartao>
+    </div>
+  );
+}
+
+/* ============================================================
+   TELA: Atualização de Materiais
+   ============================================================ */
+function TelaMateriais({ dados, setDados, usuario }) {
+  const fileRef = useRef(null);
+  const [status, setStatus] = useState({ fase: "ocioso", msg: "" });
+
+  /* -- Memoriza o arquivo escolhido (File System Access API + IndexedDB):
+        o usuário seleciona o MateriaisDeCompra.csv UMA vez; depois, o botão relê
+        o mesmo arquivo direto do disco, sem abrir janela. -- */
+  const idbAbrir = () => new Promise((res, rej) => {
+    const rq = indexedDB.open("aura-arquivos", 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore("handles");
+    rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
+  });
+  const idbGet = async (k) => { try { const db = await idbAbrir(); return await new Promise((res) => { const t = db.transaction("handles").objectStore("handles").get(k); t.onsuccess = () => res(t.result || null); t.onerror = () => res(null); }); } catch (e) { return null; } };
+  const idbSet = async (k, v) => { try { const db = await idbAbrir(); await new Promise((res) => { const t = db.transaction("handles", "readwrite").objectStore("handles").put(v, k); t.onsuccess = res; t.onerror = res; }); } catch (e) {} };
+
+  // Formato oficial do MateriaisDeCompra.csv:
+  //   delimitador ";" | Coluna A = "Cód Mat" | Coluna B = "Descrição Mat em Uso" | Coluna H = "UM Compra Padrão"
+  const interpretar = (res) => {
+    const norm = (s) => (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+    return res.data.map((r) => {
+      const chaves = Object.keys(r);
+      const achar = (alvos, indice) => {
+        const k = chaves.find((c) => alvos.includes(norm(c)));
+        if (k !== undefined) return String(r[k] ?? "").trim();
+        return chaves[indice] !== undefined ? String(r[chaves[indice]] ?? "").trim() : "";
+      };
+      return {
+        codigo: achar(["codmat", "codigo", "codigomaterial", "codmaterial", "coditem"], 0),
+        descricao: achar(["descricaomatemuso", "descricao", "descricaodoitem", "descricaomaterial"], 1),
+        unidade: achar(["umcomprapadrao", "umcompra", "unidade", "unidademedida", "um", "un"], 7),
+      };
+    }).filter((m) => (m.codigo || m.descricao) && norm(m.codigo) !== "codmat");
+  };
+
+  const concluir = async (res, dataMod) => {
+    const materiais = interpretar(res);
+    if (materiais.length === 0) {
+      setStatus({ fase: "erro", msg: "Nenhum material reconhecido. Esperado: CSV separado por \";\" com as colunas Cód Mat, Descrição Mat em Uso e UM Compra Padrão." });
+      return;
+    }
+    let nd = { ...dados, materiais, materiaisAtualizadoEm: dataMod };
+    nd = comLog(nd, usuario, "Materiais", "Atualizou a base de materiais", `${materiais.length} materiais carregados (arquivo de ${dataMod})`, "");
+    setDados(nd); await salvarDados(nd);
+    setStatus({ fase: "concluido", msg: `Concluído ✓ — ${materiais.length} materiais carregados.` });
+  };
+
+  const processarCSV = (file, encoding) => {
+    const dataMod = new Date(file.lastModified).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true, delimiter: ";", encoding: encoding || "UTF-8",
+      quoteChar: "\x01", escapeChar: "\x01",
+      complete: async (res) => {
+        const texto = JSON.stringify(res.meta.fields || []) + JSON.stringify(res.data[0] || {});
+        if (!encoding && texto.includes("\uFFFD")) { processarCSV(file, "ISO-8859-1"); return; }
+        if ((res.meta.fields || []).length <= 1 && !file.__tentouAuto) {
+          file.__tentouAuto = true;
+          Papa.parse(file, {
+            header: true, skipEmptyLines: true, encoding: encoding || "UTF-8",
+            quoteChar: "\x01", escapeChar: "\x01",
+            complete: (r2) => concluir(r2, dataMod), error: () => setStatus({ fase: "erro", msg: "Não foi possível ler o arquivo. Verifique se é um CSV válido." }),
+          });
+          return;
+        }
+        concluir(res, dataMod);
+      },
+      error: () => setStatus({ fase: "erro", msg: "Não foi possível ler o arquivo. Verifique se é um CSV válido." }),
+    });
+  };
+
+  // Modo real (Entra ID): baixa o arquivo direto do SharePoint, sem nenhuma interação
+  // (Homologação). Builds PÚBLICOS (Teste) devem usar um placeholder.
+  const URL_PASTA_SHAREPOINT = "https://tenant-teste.sharepoint.com/:f:/r/sites/Site_Teste/Shared%20Documents/Materiais";
+  const baixarDoSharePoint = async () => {
+    const app = obterMsal();
+    const conta = app.getAllAccounts()[0];
+    if (!conta) throw new Error("sem sessão");
+    let token;
+    try { token = (await app.acquireTokenSilent({ scopes: ["Files.Read.All"], account: conta })).accessToken; }
+    catch (e) { token = (await app.acquireTokenPopup({ scopes: ["Files.Read.All"] })).accessToken; }
+    const shareId = "u!" + btoa(URL_PASTA_SHAREPOINT).replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
+    const base = `https://graph.microsoft.com/v1.0/shares/${shareId}/driveItem:/MateriaisDeCompra.csv`;
+    const meta = await (await fetch(base, { headers: { Authorization: `Bearer ${token}` } })).json();
+    const resp = await fetch(base + ":/content", { headers: { Authorization: `Bearer ${token}` } });
+    if (!resp.ok) throw new Error("download falhou");
+    const buf = await resp.arrayBuffer();
+    let texto = new TextDecoder("utf-8").decode(buf);
+    if (texto.includes("\uFFFD")) texto = new TextDecoder("iso-8859-1").decode(buf);
+    const dataMod = meta.lastModifiedDateTime
+      ? new Date(meta.lastModifiedDateTime).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })
+      : agoraStr();
+    Papa.parse(texto, {
+      header: true, skipEmptyLines: true, delimiter: ";", quoteChar: "\x01", escapeChar: "\x01",
+      complete: (res) => concluir(res, dataMod),
+      error: () => setStatus({ fase: "erro", msg: "Falha ao interpretar o CSV do SharePoint." }),
+    });
+  };
+
+  const atualizar = async () => {
+    setStatus({ fase: "andamento", msg: "Atualização em andamento…" });
+
+    // 1) SharePoint automático (quando o Entra ID estiver configurado pela TI)
+    if (AUTENTICACAO_REAL) {
+      try { await baixarDoSharePoint(); return; }
+      catch (e) { /* segue para a leitura local */ }
+    }
+
+    // 2) Releitura silenciosa do arquivo já memorizado (sem abrir janela)
+    if (window.showOpenFilePicker) {
+      try {
+        let handle = await idbGet("materiais");
+        if (handle && handle.queryPermission) {
+          let perm = await handle.queryPermission({ mode: "read" });
+          if (perm !== "granted") perm = await handle.requestPermission({ mode: "read" });
+          if (perm !== "granted") handle = null;
+        }
+        if (!handle) {
+          // Primeira vez apenas: aponte onde está o MateriaisDeCompra.csv
+          const [h] = await window.showOpenFilePicker({ types: [{ description: "CSV de materiais", accept: { "text/csv": [".csv"] } }] });
+          handle = h; await idbSet("materiais", handle);
+        }
+        const file = await handle.getFile();
+        processarCSV(file);
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") { setStatus({ fase: "ocioso", msg: "" }); return; }
+      }
+    }
+
+    // 3) Último recurso (navegadores sem suporte): seletor tradicional
+    fileRef.current?.click();
+  };
+
+  const corStatus = { andamento: CORES.azul, concluido: "seagreen", erro: CORES.laranja }[status.fase] || CORES.cinza;
+
+  return (
+    <Cartao style={{ maxWidth: 640, margin: "0 auto", textAlign: "center", padding: 40, position: "relative" }}>
+      <h2 style={{ margin: "0 0 6px", color: CORES.azul }}>Atualização dos Materiais</h2>
+      <p style={{ fontSize: 13.5, color: CORES.cinza, margin: "0 0 24px" }}>
+        Atualiza a base de itens a partir do arquivo <strong>MateriaisDeCompra.csv</strong> (sempre o mesmo arquivo, no mesmo local).<br />
+        Na primeira utilização, aponte onde ele está; nas próximas, a leitura é direta, sem abrir janela.
+      </p>
+      <input ref={fileRef} type="file" accept=".csv" style={{ display: "none" }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) processarCSV(f); e.target.value = ""; }} />
+      <Botao tipo="laranja" style={{ fontSize: 16, padding: "14px 30px" }} disabled={status.fase === "andamento"} onClick={atualizar}>
+        {status.fase === "andamento" ? "⏳ Atualização em andamento…" : "⟳ Atualização dos Materiais"}
+      </Botao>
+      {status.msg && (
+        <div style={{ marginTop: 12, fontSize: 13.5, fontWeight: 700, color: corStatus }}>
+          {status.msg}
+        </div>
+      )}
+      <div style={{ marginTop: 10, fontSize: 12.5, color: CORES.cinza, fontStyle: "italic" }}>
+        Modificação do arquivo “MateriaisDeCompra.csv”: {dados.materiaisAtualizadoEm || "— ainda não atualizado —"}
+      </div>
+      <div style={{ marginTop: 26, background: CORES.cinzaClaro, borderRadius: 8, padding: 14, textAlign: "left", fontSize: 13, color: CORES.azul }}>
+        <strong>Base atual:</strong> {dados.materiais.length} materiais disponíveis para busca nas solicitações.
+      </div>
+    </Cartao>
+  );
+}
+
+
+function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
+  const [modo, setModo] = useState("Compra");
+  const [fUsuario, setFUsuario] = useState("");
+  const [fDescricao, setFDescricao] = useState("");
+  const [fStatus, setFStatus] = useState("Todos");
+  const [modal, setModal] = useState(null); // { registro, acao: "concluir" | "cancelar", texto }
+  const admin = usuario.perfil === "Administrador";
+  const lista = modo === "Compra" ? "compras" : "cadastros";
+
+  const registros = (modo === "Compra" ? dados.compras : dados.cadastros).filter(
+    (r) => r.solicitante.toLowerCase().includes(fUsuario.toLowerCase()) &&
+      (r.descricao || "").toLowerCase().includes(fDescricao.toLowerCase()) &&
+      (fStatus === "Todos" || statusDe(r) === fStatus)
+  );
+
+  const atualizarRegistro = async (id, mudancas, logInfo) => {
+    let nd = { ...dados, [lista]: dados[lista].map((x) => (x.id === id ? { ...x, ...mudancas } : x)) };
+    if (logInfo) nd = comLog(nd, usuario, logInfo.categoria || "Movimentação", logInfo.acao, logInfo.detalhe, id);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  /* ---------- Cadastros: Solicitado / Concluído / Cancelar ---------- */
+  const alternarSolicitado = async (r) => {
+    if (!admin || r.cancelado || r.concluido) return;
+    const marcando = !r.solicitado;
+    await atualizarRegistro(r.id, { solicitado: marcando, solicitadoPor: marcando ? usuario.nome : "", solicitadoEm: marcando ? agoraStr() : "" },
+      { categoria: "Movimentação", acao: marcando ? "Marcou cadastro como Solicitado" : "Desmarcou 'Solicitado' do cadastro", detalhe: `${r.descricao || ""} (${r.tipo || ""})` });
+    if (marcando) notificarEtapa(r, "Solicitado (em andamento)", "Seu cadastro foi encaminhado para processamento.", usuario.nome);
+  };
+
+  const alternarConcluidoCadastro = async (r) => {
+    if (!admin || r.cancelado) return;
+    if (!r.concluido && !r.solicitado) { avisar("Marque primeiro como “Solicitado” antes de concluir."); return; }
+    if (!r.concluido) {
+      // 1.1.2 — Débito Direto concluído gera automaticamente uma Solicitação de Compra
+      if (r.tipo === "Débito Direto") {
+        const compra = {
+          id: uid(), solicitante: r.solicitante, email: r.email, dataHora: agoraStr(),
+          codigo: "", descricao: r.descricao, quantidade: r.quantidade, unidade: r.unidade,
+          centroCusto: r.centroCusto, contaContabil: r.contaContabil,
+          capex: !!r.capex, nomeCapex: r.nomeCapex || "",
+          observacoes: r.observacoes || "", fornecedorEspecifico: r.fornecedorEspecifico || "",
+          concluido: false, origem: "Cadastro Débito Direto",
+        };
+        let nd = {
+          ...dados,
+          compras: [...dados.compras, compra],
+          cadastros: dados.cadastros.map((x) => (x.id === r.id ? { ...x, concluido: true, concluidoPor: usuario.nome, concluidoEm: agoraStr(), compraGeradaId: compra.id } : x)),
+        };
+        nd = comLog(nd, usuario, "Movimentação", "Concluiu cadastro (Débito Direto) e gerou Solicitação de Compra", `${r.descricao || ""} → compra ${compra.id}`, r.id);
+        setDados(nd); await salvarDados(nd);
+        notificarEtapa(r, "Concluída", "Uma Solicitação de Compra foi gerada automaticamente a partir deste cadastro (Débito Direto).", usuario.nome);
+        avisar("Cadastro concluído. Solicitação de Compra gerada automaticamente no relatório de Compras.");
+      } else {
+        // 2 — Estoque e Estoque Sazonal: apenas conclui, sem gerar compra
+        await atualizarRegistro(r.id, { concluido: true, concluidoPor: usuario.nome, concluidoEm: agoraStr() },
+          { categoria: "Movimentação", acao: "Concluiu cadastro", detalhe: `${r.descricao || ""} (${r.tipo || ""})` });
+        notificarEtapa(r, "Concluída", "", usuario.nome);
+      }
+    } else {
+      // Desfazer conclusão: remove a compra gerada, se ainda estiver pendente
+      let compras = dados.compras;
+      if (r.compraGeradaId) {
+        const gerada = compras.find((c) => c.id === r.compraGeradaId);
+        if (gerada && !gerada.concluido && !gerada.cancelado) {
+          compras = compras.filter((c) => c.id !== r.compraGeradaId);
+          avisar("Conclusão desfeita. A Solicitação de Compra gerada (ainda pendente) foi removida.");
+        } else if (gerada) {
+          avisar("Conclusão desfeita. A Solicitação de Compra gerada foi mantida por já estar concluída/cancelada.");
+        }
+      }
+      let nd = {
+        ...dados, compras,
+        cadastros: dados.cadastros.map((x) => (x.id === r.id ? { ...x, concluido: false, concluidoPor: "", concluidoEm: "", compraGeradaId: "" } : x)),
+      };
+      nd = comLog(nd, usuario, "Movimentação", "Desfez conclusão de cadastro", `${r.descricao || ""} (${r.tipo || ""})`, r.id);
+      setDados(nd); await salvarDados(nd);
+    }
+  };
+
+  // Concluído: marcar exige nº da RC; desmarcar limpa o registro de conclusão
+  const alternarConcluido = (r) => {
+    if (!admin || r.cancelado) return;
+    if (!r.concluido) setModal({ registro: r, acao: "concluir", texto: r.rc || "" });
+    else atualizarRegistro(r.id, { concluido: false, concluidoPor: "", concluidoEm: "" },
+      { categoria: "Movimentação", acao: "Reabriu solicitação (desfez conclusão)", detalhe: `${r.codigo || ""} — ${r.descricao || ""}` });
+  };
+
+  // Cancelar: marcar exige justificativa; desmarcar limpa o registro de cancelamento
+  const alternarCancelado = (r) => {
+    if (!admin || r.concluido) return;
+    if (!r.cancelado) setModal({ registro: r, acao: "cancelar", texto: r.justificativa || "" });
+    else atualizarRegistro(r.id, { cancelado: false, canceladoPor: "", justificativa: "", canceladoEm: "" },
+      { categoria: "Movimentação", acao: "Reativou solicitação (desfez cancelamento)", detalhe: `${r.codigo || r.descricao || ""}` });
+  };
+
+  const confirmarModal = async () => {
+    const t = (modal.texto || "").trim();
+    if (!t) { avisar(modal.acao === "concluir" ? "Informe o número da RC para concluir." : "Informe a justificativa do cancelamento."); return; }
+    if (modal.acao === "concluir") {
+      const com = (modal.comentario || "").trim();
+      await atualizarRegistro(modal.registro.id, { concluido: true, rc: t, comentarioAdmin: com, concluidoPor: usuario.nome, concluidoEm: agoraStr() },
+        { categoria: "Movimentação", acao: `Concluiu solicitação de ${modo === "Compra" ? "compra" : "cadastro"}`, detalhe: `${modal.registro.codigo || modal.registro.descricao || ""} | RC: ${t}${com ? ` | Comentário: ${com}` : ""}` });
+      notificarEtapa(modal.registro, "Concluída", `RC: ${t}${com ? ` | Comentário: ${com}` : ""}`, usuario.nome);
+    } else {
+      await atualizarRegistro(modal.registro.id, { cancelado: true, justificativa: t, canceladoPor: usuario.nome, canceladoEm: agoraStr() },
+        { categoria: "Movimentação", acao: `Cancelou solicitação de ${modo === "Compra" ? "compra" : "cadastro"}`, detalhe: `${modal.registro.codigo || modal.registro.descricao || ""} | Motivo: ${t}` });
+      notificarEtapa(modal.registro, "Cancelada", `Motivo: ${t}`, usuario.nome);
+    }
+    setModal(null);
+  };
+
+  const salvarOC = (r, valor) => {
+    if ((r.oc || "") !== valor.trim()) atualizarRegistro(r.id, { oc: valor.trim() },
+      { categoria: "Movimentação", acao: "Atualizou nº da OC", detalhe: `${r.codigo || r.descricao || ""} | OC: ${valor.trim() || "(vazio)"}` });
+  };
+
+  const colunas = modo === "Compra"
+    ? [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["codigo", "Cód."], ["descricao", "Descrição"], ["quantidade", "Qtd."], ["unidade", "Un."], ["centroCusto", "C. Custo"], ["contaContabil", "Conta"], ["nomeCapex", "Capex"], ["fornecedorEspecifico", "Forn. Específico"], ["observacoes", "Observações"]]
+    : [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["tipo", "Tipo"], ["fornecedor", "Fornecedor"], ["partNumber", "Part Number"]];
+
+  // Colunas específicas de cada tipo de cadastro (4.x — relatório dividido por tipo)
+  const colunasPorTipo = {
+    "Estoque": [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["fornecedor", "Fornecedor"], ["estoqueMin", "Est. Mín."], ["estoqueMax", "Est. Máx."], ["consumoMensal", "Consumo/Mês"], ["nomeCapex", "Capex"], ["anexo", "Anexo"], ["observacoes", "Observações"]],
+    "Estoque Sazonal": [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["fornecedor", "Fornecedor"], ["estoqueDesejado", "Est. Desejado"], ["consumoMensal", "Consumo/Mês"], ["nomeCapex", "Capex"], ["fornecedorEspecifico", "Forn. Específico"], ["anexo", "Anexo"], ["observacoes", "Observações"]],
+    "Débito Direto": [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["quantidade", "Qtd."], ["centroCusto", "C. Custo"], ["contaContabil", "Conta"], ["nomeCapex", "Capex"], ["fornecedorEspecifico", "Forn. Específico"], ["anexo", "Anexo"], ["observacoes", "Observações"]],
+  };
+  const TIPOS_CADASTRO = ["Estoque", "Estoque Sazonal", "Débito Direto"];
+
+  const exportarExcel = () => {
+    const wb = XLSX.utils.book_new();
+    if (modo === "Compra") {
+      const linhas = registros.map((r) => {
+        const o = {};
+        colunas.forEach(([k, rotulo]) => (o[rotulo] = r[k] || ""));
+        o["Concluído"] = r.concluido ? "Sim" : "Não";
+        o["RC"] = r.rc || "";
+        o["OC"] = r.oc || "";
+        o["Concluído em"] = r.concluidoEm || "";
+        o["Concluído por"] = r.concluidoPor || "";
+        o["Comentário Admin"] = r.comentarioAdmin || "";
+        o["Cancelado"] = r.cancelado ? "Sim" : "Não";
+        o["Justificativa"] = r.justificativa || "";
+        o["Cancelado em"] = r.canceladoEm || "";
+        o["Cancelado por"] = r.canceladoPor || "";
+        o["Capex"] = r.capex ? "Sim" : "Não";
+        o["Origem"] = r.origem || "";
+        return o;
+      });
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas.length ? linhas : [{}]), "Compras");
+      XLSX.writeFile(wb, "Relatorio_Compras.xlsx");
+    } else {
+      TIPOS_CADASTRO.forEach((t) => {
+        const linhas = registros.filter((r) => r.tipo === t).map((r) => {
+          const o = {};
+          colunasPorTipo[t].forEach(([k, rotulo]) => {
+            o[rotulo] = k === "anexo" ? (r.anexo ? r.anexo.nome + (r.anexo.url ? " | " + r.anexo.url : "") : "") : (r[k] || "");
+          });
+          o["Capex"] = r.capex ? "Sim" : "Não";
+          o["Solicitado"] = r.solicitado ? "Sim" : "Não";
+          o["Solicitado em"] = r.solicitadoEm || "";
+          o["Concluído"] = r.concluido ? "Sim" : "Não";
+          o["Concluído em"] = r.concluidoEm || "";
+          o["Cancelado"] = r.cancelado ? "Sim" : "Não";
+          o["Cancelado em"] = r.canceladoEm || "";
+          o["Justificativa"] = r.justificativa || "";
+          o["Registrado por"] = r.concluidoPor || r.canceladoPor || r.solicitadoPor || "";
+          return o;
+        });
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas.length ? linhas : [{}]), t.replace("é", "e"));
+      });
+      XLSX.writeFile(wb, "Relatorio_Cadastros.xlsx");
+    }
+  };
+
+  const th = { padding: 8, fontSize: 11.5, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left", whiteSpace: "nowrap" };
+  const td = { padding: "7px 8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 13.5, color: CORES.azul };
+  const check = (marcado, desabilitado, aoMudar, titulo) => (
+    <input type="checkbox" checked={!!marcado} disabled={desabilitado} onChange={aoMudar} title={titulo}
+      style={{ width: 17, height: 17, accentColor: CORES.laranja, cursor: desabilitado ? "not-allowed" : "pointer" }} />
+  );
+
+  return (
+    <Cartao>
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <h2 style={{ margin: 0, color: CORES.azul }}>Relatórios</h2>
+        {/* Switch Compra / Cadastros */}
+        <div style={{ display: "flex", border: `1px solid ${CORES.cinza}`, borderRadius: 20, overflow: "hidden" }}>
+          {["Compra", "Cadastros"].map((m) => (
+            <button key={m} onClick={() => setModo(m)} style={{
+              padding: "7px 20px", border: "none", cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
+              background: modo === m ? CORES.laranja : "#fff", color: modo === m ? "#fff" : CORES.azul, transition: "all .15s",
+            }}>{m}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ flex: "1 1 220px" }}><Campo label="Filtro: Usuário Solicitante"><input style={inputStyle} value={fUsuario} onChange={(e) => setFUsuario(e.target.value)} placeholder="Digite um nome…" /></Campo></div>
+        <div style={{ flex: "1 1 220px" }}><Campo label="Filtro: Descrição do Item"><input style={inputStyle} value={fDescricao} onChange={(e) => setFDescricao(e.target.value)} placeholder="Digite uma descrição…" /></Campo></div>
+        <div style={{ flex: "1 1 150px" }}><Campo label="Filtro: Status">
+          <select style={inputStyle} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+            <option>Todos</option><option>Pendente</option><option>Concluído</option><option>Cancelado</option>
+          </select>
+        </Campo></div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+          <Botao tipo="contorno" onClick={exportarExcel}>Exportar Excel</Botao>
+          <Botao tipo="contorno" onClick={() => window.print()}>Exportar PDF</Botao>
+        </div>
+      </div>
+
+      <div id="area-relatorio" style={{ overflowX: "auto" }}>
+        {/* Cabeçalho que aparece somente no PDF impresso */}
+        <div className="so-impressao" style={{ marginBottom: 8, borderBottom: `2px solid ${CORES.azul}`, paddingBottom: 6 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: CORES.azul }}>
+            AURA MINERALS — Relatório de {modo === "Compra" ? "Solicitações de Compra" : "Solicitações de Cadastro"}
+          </div>
+          <div style={{ fontSize: 9, color: CORES.cinza }}>
+            Emitido em {agoraStr()} por {usuario.nome}
+            {fUsuario ? ` · Filtro solicitante: "${fUsuario}"` : ""}{fDescricao ? ` · Filtro descrição: "${fDescricao}"` : ""}{fStatus !== "Todos" ? ` · Status: ${fStatus}` : ""}
+            {" · Documento gerado pelo sistema (protótipo com apoio de IA)"}
+          </div>
+        </div>
+        {modo === "Compra" ? (
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 1100 }}>
+          <thead><tr>
+            {colunas.map(([, rotulo]) => <th key={rotulo} style={th}>{rotulo}</th>)}
+            <th style={{ ...th, background: CORES.laranja }}>Concluído</th>
+            <th style={{ ...th, background: CORES.laranja }}>RC</th>
+            <th style={{ ...th, background: CORES.laranja }}>OC</th>
+            <th style={{ ...th, background: CORES.laranja }}>Cancelar</th>
+            <th style={th}>Concluído em</th>
+            <th style={th}>Cancelado em</th>
+            <th style={th}>Registro (Admin)</th>
+          </tr></thead>
+          <tbody>
+            {registros.length === 0 ? (
+              <tr><td style={{ ...td, textAlign: "center", padding: 24, color: CORES.cinza }} colSpan={colunas.length + 7}>Nenhum registro encontrado com os filtros atuais.</td></tr>
+            ) : registros.map((r) => (
+              <tr key={r.id} style={{ background: r.concluido ? "rgba(46,139,87,.06)" : r.cancelado ? "rgba(244,97,77,.07)" : "transparent" }}>
+                {colunas.map(([k]) => (
+                  <td key={k} style={{ ...td, textDecoration: r.cancelado ? "line-through" : "none", opacity: r.cancelado ? 0.65 : 1 }}>
+                    {k === "observacoes" ? (
+                      r.observacoes ? (
+                        <div style={{ background: "rgba(244,97,77,.08)", borderLeft: `3px solid ${CORES.laranja}`, borderRadius: 4, padding: "4px 8px", fontSize: 12.5, fontStyle: "italic", color: CORES.azul, minWidth: 160, maxWidth: 260, whiteSpace: "normal" }} title={r.observacoes}>
+                          💬 {r.observacoes}
+                        </div>
+                      ) : <span style={{ color: CORES.cinza }}>—</span>
+                    ) : (
+                      <span>{r[k]}{k === "descricao" && r.origem ? <div style={{ fontSize: 11, color: CORES.laranja, fontStyle: "italic" }}>origem: {r.origem}</div> : null}</span>
+                    )}
+                  </td>
+                ))}
+                {/* Concluído: exige RC ao marcar */}
+                <td style={{ ...td, textAlign: "center" }}>
+                  {check(r.concluido, !admin || r.cancelado, () => alternarConcluido(r),
+                    !admin ? "Somente administradores" : r.cancelado ? "Item cancelado" : "Marcar como concluído (exige nº da RC)")}
+                </td>
+                {/* RC: preenchida no ato da conclusão */}
+                <td style={{ ...td, whiteSpace: "nowrap", fontWeight: 600 }}>{r.rc || "—"}</td>
+                {/* OC: informada depois, quando existir; editável só por admin em itens concluídos */}
+                <td style={{ ...td, width: 110 }}>
+                  {admin && r.concluido ? (
+                    <span>
+                      <input className="so-tela" style={{ ...inputStyle, padding: "4px 8px", fontSize: 13 }} defaultValue={r.oc || ""} placeholder="nº OC"
+                        key={r.id + (r.oc || "")} onBlur={(e) => salvarOC(r, e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} title="Informe o nº da OC quando disponível" />
+                      <span className="so-impressao" style={{ fontWeight: 600 }}>{r.oc || "—"}</span>
+                    </span>
+                  ) : (r.oc || "—")}
+                </td>
+                {/* Cancelar: exige justificativa */}
+                <td style={{ ...td, textAlign: "center" }}>
+                  {check(r.cancelado, !admin || r.concluido, () => alternarCancelado(r),
+                    !admin ? "Somente administradores" : r.concluido ? "Item concluído" : "Cancelar (exige justificativa)")}
+                </td>
+                <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12.5 }}>{r.concluidoEm || "—"}</td>
+                <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12.5 }}>{r.canceladoEm || "—"}</td>
+                {/* Trilha: qual admin concluiu / cancelou */}
+                <td style={{ ...td, fontSize: 12.5 }}>
+                  {r.concluido && r.concluidoPor && (
+                    <div style={{ color: "seagreen" }}>✓ Concluído por {r.concluidoPor}
+                      {r.comentarioAdmin && <div style={{ color: CORES.azul, fontStyle: "italic", fontWeight: 400 }} title={r.comentarioAdmin}>💬 “{r.comentarioAdmin.length > 70 ? r.comentarioAdmin.slice(0, 68) + "…" : r.comentarioAdmin}”</div>}
+                    </div>
+                  )}
+                  {r.cancelado && r.canceladoPor && (
+                    <div style={{ color: CORES.laranja }} title={r.justificativa}>✕ Cancelado por {r.canceladoPor}<br />
+                      <span style={{ color: CORES.cinza, fontStyle: "italic" }}>“{(r.justificativa || "").slice(0, 60)}{(r.justificativa || "").length > 60 ? "…" : ""}”</span>
+                    </div>
+                  )}
+                  {!r.concluido && !r.cancelado && <span style={{ color: CORES.cinza }}>—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        ) : (
+        /* ---------- Relatório de Cadastros dividido por tipo ---------- */
+        <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
+          {TIPOS_CADASTRO.map((tipo) => {
+            const doTipo = registros.filter((r) => r.tipo === tipo);
+            return (
+              <div key={tipo}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, borderLeft: `4px solid ${CORES.laranja}`, paddingLeft: 10 }}>
+                  <h3 style={{ margin: 0, color: CORES.azul, fontSize: 16 }}>{tipo}</h3>
+                  <span style={{ fontSize: 12, color: "#fff", background: CORES.cinza, borderRadius: 12, padding: "2px 10px" }}>{doTipo.length}</span>
+                  {tipo === "Débito Direto" && <span style={{ fontSize: 11.5, color: CORES.laranja, fontStyle: "italic" }}>concluir gera Solicitação de Compra automaticamente</span>}
+                </div>
+                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 1100 }}>
+                  <thead><tr>
+                    {colunasPorTipo[tipo].map(([, rotulo]) => <th key={rotulo} style={th}>{rotulo}</th>)}
+                    <th style={{ ...th, background: CORES.laranja }}>Solicitado</th>
+                    <th style={{ ...th, background: CORES.laranja }}>Concluído</th>
+                    <th style={{ ...th, background: CORES.laranja }}>Cancelar</th>
+                    <th style={th}>Solicitado em</th>
+                    <th style={th}>Concluído em</th>
+                    <th style={th}>Cancelado em</th>
+                    <th style={th}>Registro (Admin)</th>
+                  </tr></thead>
+                  <tbody>
+                    {doTipo.length === 0 ? (
+                      <tr><td style={{ ...td, textAlign: "center", padding: 16, color: CORES.cinza }} colSpan={colunasPorTipo[tipo].length + 7}>Nenhum cadastro deste tipo.</td></tr>
+                    ) : doTipo.map((r) => (
+                      <tr key={r.id} style={{ background: r.concluido ? "rgba(46,139,87,.06)" : r.cancelado ? "rgba(244,97,77,.07)" : "transparent" }}>
+                        {colunasPorTipo[tipo].map(([k]) => (
+                          <td key={k} style={{ ...td, textDecoration: r.cancelado ? "line-through" : "none", opacity: r.cancelado ? 0.65 : 1 }}>
+                            {k === "anexo" ? <AnexoLink anexo={r.anexo} />
+                              : k === "observacoes" ? (r.observacoes
+                                ? <div style={{ background: "rgba(244,97,77,.08)", borderLeft: `3px solid ${CORES.laranja}`, borderRadius: 4, padding: "4px 8px", fontSize: 12.5, fontStyle: "italic", color: CORES.azul, minWidth: 140, maxWidth: 240, whiteSpace: "normal" }} title={r.observacoes}>💬 {r.observacoes}</div>
+                                : <span style={{ color: CORES.cinza }}>—</span>)
+                              : r[k]}
+                          </td>
+                        ))}
+                        {/* Solicitado */}
+                        <td style={{ ...td, textAlign: "center" }}>
+                          {check(r.solicitado, !admin || r.cancelado || r.concluido, () => alternarSolicitado(r),
+                            !admin ? "Somente administradores" : r.concluido ? "Já concluído" : r.cancelado ? "Item cancelado" : "Marcar como solicitado")}
+                        </td>
+                        {/* Concluído */}
+                        <td style={{ ...td, textAlign: "center" }}>
+                          {check(r.concluido, !admin || r.cancelado, () => alternarConcluidoCadastro(r),
+                            !admin ? "Somente administradores" : r.cancelado ? "Item cancelado" : !r.solicitado && !r.concluido ? "Marque Solicitado primeiro" : tipo === "Débito Direto" ? "Concluir e gerar Solicitação de Compra" : "Marcar como concluído")}
+                        </td>
+                        {/* Cancelar */}
+                        <td style={{ ...td, textAlign: "center" }}>
+                          {check(r.cancelado, !admin || r.concluido, () => alternarCancelado(r),
+                            !admin ? "Somente administradores" : r.concluido ? "Item concluído" : "Cancelar (exige justificativa)")}
+                        </td>
+                        <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12 }}>{r.solicitadoEm || "—"}</td>
+                        <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12 }}>{r.concluidoEm || "—"}</td>
+                        <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12 }}>{r.canceladoEm || "—"}</td>
+                        {/* Trilha */}
+                        <td style={{ ...td, fontSize: 12.5 }}>
+                          {r.solicitado && !r.concluido && !r.cancelado && <div style={{ color: CORES.azul }}>◔ Solicitado por {r.solicitadoPor || "—"}</div>}
+                          {r.concluido && <div style={{ color: "seagreen" }}>✓ Concluído por {r.concluidoPor}{r.compraGeradaId ? " · compra gerada" : ""}</div>}
+                          {r.cancelado && r.canceladoPor && (
+                            <div style={{ color: CORES.laranja }} title={r.justificativa}>✕ Cancelado por {r.canceladoPor}<br />
+                              <span style={{ color: CORES.cinza, fontStyle: "italic" }}>“{(r.justificativa || "").slice(0, 60)}{(r.justificativa || "").length > 60 ? "…" : ""}”</span>
+                            </div>
+                          )}
+                          {!r.solicitado && !r.concluido && !r.cancelado && <span style={{ color: CORES.cinza }}>—</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+        )}
+      </div>
+      {!admin && <p style={{ fontSize: 12, color: CORES.cinza, marginTop: 10 }}>As colunas Concluído, RC, OC e Cancelar só podem ser alteradas por administradores. Itens concluídos ou cancelados ficam bloqueados para edição e remoção.</p>}
+
+      {/* Modal de RC (conclusão) ou Justificativa (cancelamento) */}
+      {modal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(45,61,112,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "min(460px, 92%)", borderTop: `4px solid ${CORES.laranja}` }}>
+            <h3 style={{ margin: "0 0 4px", color: CORES.azul }}>
+              {modal.acao === "concluir" ? "Concluir solicitação" : "Cancelar solicitação"}
+            </h3>
+            <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 14px" }}>
+              {modal.registro.descricao}
+            </p>
+            <Campo label={modal.acao === "concluir" ? "Número da RC" : "Justificativa do cancelamento"} obrigatorio>
+              {modal.acao === "concluir" ? (
+                <input style={inputStyle} autoFocus value={modal.texto} placeholder="Ex: RC-000123"
+                  onChange={(e) => setModal({ ...modal, texto: e.target.value })} />
+              ) : (
+                <textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} autoFocus value={modal.texto}
+                  placeholder="Descreva o motivo do cancelamento…"
+                  onChange={(e) => setModal({ ...modal, texto: e.target.value })} />
+              )}
+            </Campo>
+            {modal.acao === "concluir" && (
+              <div style={{ marginTop: 12 }}>
+                <Campo label="Comentário ao solicitante (opcional)">
+                  <textarea style={{ ...inputStyle, minHeight: 64, resize: "vertical", fontFamily: "inherit" }}
+                    value={modal.comentario || ""} placeholder="Ex: prazo estimado de entrega, fornecedor escolhido, orientações…"
+                    onChange={(e) => setModal({ ...modal, comentario: e.target.value })} />
+                </Campo>
+              </div>
+            )}
+            <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <Botao tipo="contorno" onClick={() => setModal(null)}>Voltar</Botao>
+              <Botao tipo={modal.acao === "concluir" ? "primario" : "perigo"} onClick={confirmarModal}>
+                {modal.acao === "concluir" ? "Confirmar conclusão" : "Confirmar cancelamento"}
+              </Botao>
+            </div>
+          </div>
+        </div>
+      )}
+    </Cartao>
+  );
+}
+
+/* ============================================================
+   TELA: Configurações (somente Administrador)
+   ============================================================ */
+/* ============================================================
+   Registros de Auditoria (SOX) — trilha imutável de movimentações
+   Somente leitura + filtros + exportação (PDF via impressão, Excel).
+   ============================================================ */
+function TelaAuditoria({ dados }) {
+  const [fCat, setFCat] = useState("Todas");
+  const [fTexto, setFTexto] = useState("");
+  const [fUsuario, setFUsuario] = useState("");
+  const [fDe, setFDe] = useState("");   // yyyy-mm-dd
+  const [fAte, setFAte] = useState("");
+
+  const todos = dados.auditoria || [];
+  // Mais recentes primeiro (ordena pelo carimbo imutável ts)
+  const ordenados = todos.slice().sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+  const dentroData = (ts) => {
+    if (!fDe && !fAte) return true;
+    const dia = String(ts || "").slice(0, 10); // ISO yyyy-mm-dd — comparação lexicográfica segura
+    if (fDe && dia < fDe) return false;
+    if (fAte && dia > fAte) return false;
+    return true;
+  };
+  const filtrados = ordenados.filter((r) =>
+    (fCat === "Todas" || r.categoria === fCat) &&
+    (!fUsuario || `${r.usuarioNome} ${r.usuarioEmail}`.toLowerCase().includes(fUsuario.toLowerCase())) &&
+    (!fTexto || `${r.acao} ${r.detalhe}`.toLowerCase().includes(fTexto.toLowerCase())) &&
+    dentroData(r.ts)
+  );
+
+  const exportarExcel = () => {
+    const linhas = filtrados.map((r) => ({
+      "Data/Hora": r.quando, "Usuário": r.usuarioNome, "E-mail": r.usuarioEmail, "Perfil": r.perfil,
+      "Categoria": r.categoria, "Ação": r.acao, "Detalhe": r.detalhe, "Ref.": r.refId, "Carimbo (UTC)": r.ts,
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas.length ? linhas : [{}]), "Auditoria");
+    XLSX.writeFile(wb, "Trilha_Auditoria.xlsx");
+  };
+
+  const corCat = { "Compra": "#2D3D70", "Cadastro": "#0f6b3f", "Movimentação": "#b45309", "Materiais": "#5b21b6", "Usuários": "#9d174d", "Acesso": "#334155" };
+  const th = { padding: "8px 8px", fontSize: 11, textTransform: "uppercase", letterSpacing: ".03em", color: "#fff", background: CORES.azul, textAlign: "left", whiteSpace: "nowrap" };
+  const td = { padding: "6px 8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 12.5, color: CORES.azul, verticalAlign: "top" };
+
+  return (
+    <div>
+      <div className="so-tela">
+        <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Registros de Auditoria (SOX)</h2>
+        <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 14px" }}>
+          Trilha <strong>imutável</strong> de todas as movimentações do sistema (solicitações, conclusões, cancelamentos, materiais, usuários e acessos).
+          Cada registro guarda <strong>quem</strong>, <strong>o quê</strong> e <strong>quando</strong>. Total: <strong>{todos.length}</strong> registro(s)
+          {" · "}exibindo <strong>{filtrados.length}</strong> após filtros.
+        </p>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+          <div style={{ flex: "1 1 150px" }}><Campo label="Categoria">
+            <select style={inputStyle} value={fCat} onChange={(e) => setFCat(e.target.value)}>
+              <option>Todas</option>
+              {LOG_CATEGORIAS.map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </Campo></div>
+          <div style={{ flex: "1 1 180px" }}><Campo label="Usuário"><input style={inputStyle} value={fUsuario} onChange={(e) => setFUsuario(e.target.value)} placeholder="Nome ou e-mail…" /></Campo></div>
+          <div style={{ flex: "1 1 200px" }}><Campo label="Buscar (ação/detalhe)"><input style={inputStyle} value={fTexto} onChange={(e) => setFTexto(e.target.value)} placeholder="Texto livre…" /></Campo></div>
+          <div style={{ flex: "0 1 150px" }}><Campo label="De"><input type="date" style={inputStyle} value={fDe} onChange={(e) => setFDe(e.target.value)} /></Campo></div>
+          <div style={{ flex: "0 1 150px" }}><Campo label="Até"><input type="date" style={inputStyle} value={fAte} onChange={(e) => setFAte(e.target.value)} /></Campo></div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Botao tipo="contorno" onClick={exportarExcel}>Exportar Excel</Botao>
+            <Botao tipo="laranja" onClick={() => window.print()}>Exportar PDF</Botao>
+          </div>
+        </div>
+      </div>
+
+      {/* Área imprimível — o CSS @media print isola este bloco (#area-relatorio) */}
+      <div id="area-relatorio">
+        <div className="so-impressao" style={{ marginBottom: 8 }}>
+          <h3 style={{ margin: 0, color: CORES.azul }}>Trilha de Auditoria — Aura Minerals · Solicitação de Compras e Cadastros</h3>
+          <div style={{ fontSize: 10 }}>Gerado em {agoraStr()} · {filtrados.length} registro(s){fCat !== "Todas" ? ` · Categoria: ${fCat}` : ""}{(fDe || fAte) ? ` · Período: ${fDe || "início"} a ${fAte || "hoje"}` : ""}</div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 820 }}>
+            <thead><tr>
+              <th style={th}>Data/Hora</th><th style={th}>Usuário</th><th style={th}>Perfil</th>
+              <th style={th}>Categoria</th><th style={th}>Ação</th><th style={th}>Detalhe</th><th style={th}>Ref.</th>
+            </tr></thead>
+            <tbody>
+              {filtrados.map((r) => (
+                <tr key={r.id}>
+                  <td style={{ ...td, whiteSpace: "nowrap" }}>{r.quando}</td>
+                  <td style={td}>{r.usuarioNome}<div style={{ fontSize: 10.5, color: CORES.cinza }}>{r.usuarioEmail}</div></td>
+                  <td style={td}>{r.perfil}</td>
+                  <td style={td}><span style={{ display: "inline-block", padding: "1px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#fff", background: corCat[r.categoria] || CORES.azul }}>{r.categoria}</span></td>
+                  <td style={td}>{r.acao}</td>
+                  <td style={{ ...td, maxWidth: 320, wordBreak: "break-word" }}>{r.detalhe || "—"}</td>
+                  <td style={{ ...td, fontSize: 10.5, color: CORES.cinza, wordBreak: "break-all" }}>{r.refId || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {filtrados.length === 0 && (
+          <p style={{ textAlign: "center", color: CORES.cinza, fontSize: 13, padding: "24px 0" }}>Nenhum registro encontrado para os filtros selecionados.</p>
+        )}
+        <p className="so-impressao" style={{ fontSize: 9, color: "#666", marginTop: 10 }}>
+          Documento de auditoria gerado pelo sistema — conteúdo imutável (append-only). Números de produção exigem validação humana formal antes de uso externo.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function TelaConfig({ dados, setDados, usuario }) {
+  if (usuario.perfil !== "Administrador") {
+    return (
+      <Cartao style={{ maxWidth: 520, margin: "0 auto", textAlign: "center", padding: 36 }}>
+        <div style={{ fontSize: 40 }}>🔒</div>
+        <h2 style={{ color: CORES.azul, margin: "8px 0 4px" }}>Acesso restrito</h2>
+        <p style={{ color: CORES.cinza, fontSize: 14 }}>As Configurações exigem login de Administrador. Solicite acesso a um administrador do sistema.</p>
+      </Cartao>
+    );
+  }
+
+  const [aba, setAba] = useState("usuarios"); // "usuarios" | "registros"
+  const [novo, setNovo] = useState({ nome: "", email: "", perfil: "Usuário Comum" });
+  const [resetEmail, setResetEmail] = useState(null);
+  const [novaSenha, setNovaSenha] = useState("");
+
+  const mudarPerfil = async (email, perfil) => {
+    const admins = Object.entries(dados.usuarios).filter(([, u]) => u.perfil === "Administrador");
+    if (perfil === "Usuário Comum" && admins.length === 1 && admins[0][0] === email) {
+      avisar("Não é possível remover o último administrador do sistema."); return;
+    }
+    // Ao rebaixar um administrador, ele deixa de ser responsável por qualquer usuário
+    const usuarios = Object.fromEntries(Object.entries(dados.usuarios).map(([e, u]) => {
+      let nu = e === email ? { ...u, perfil } : u;
+      if (perfil === "Usuário Comum" && nu.administradores && nu.administradores.includes(email)) {
+        nu = { ...nu, administradores: nu.administradores.filter((adm) => adm !== email) };
+      }
+      return [e, nu];
+    }));
+    let nd = { ...dados, usuarios };
+    nd = comLog(nd, usuario, "Usuários", `Alterou perfil para "${perfil}"`, email, email);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  // Vincula/desvincula um administrador responsável a um usuário comum
+  const alternarVinculo = async (email, adminEmail) => {
+    const atual = dados.usuarios[email].administradores || [];
+    const novos = atual.includes(adminEmail) ? atual.filter((a) => a !== adminEmail) : [...atual, adminEmail];
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...dados.usuarios[email], administradores: novos } } };
+    nd = comLog(nd, usuario, "Usuários", "Alterou administradores responsáveis", `${email} → [${novos.join(", ") || "nenhum"}]`, email);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  const adicionarUsuario = async () => {
+    const email = novo.email.trim().toLowerCase();
+    if (!novo.nome.trim()) { avisar("Informe o nome do usuário."); return; }
+    if (!email.endsWith(DOMINIO) || email.length <= DOMINIO.length) { avisar(`O e-mail deve pertencer ao domínio ${DOMINIO}.`); return; }
+    if (dados.usuarios[email]) { avisar("Este e-mail já está cadastrado."); return; }
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { nome: novo.nome.trim(), perfil: novo.perfil } } };
+    nd = comLog(nd, usuario, "Usuários", "Cadastrou usuário", `${novo.nome.trim()} <${email}> — ${novo.perfil}`, email);
+    setDados(nd); await salvarDados(nd);
+    setNovo({ nome: "", email: "", perfil: "Usuário Comum" });
+    avisar(`Usuário cadastrado. No primeiro acesso, ${novo.nome.trim().split(" ")[0]} criará a própria senha.`);
+  };
+
+  const editarNome = async (email, nome) => {
+    if (!nome.trim() || nome.trim() === dados.usuarios[email].nome) return;
+    const anterior = dados.usuarios[email].nome;
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...dados.usuarios[email], nome: nome.trim() } } };
+    nd = comLog(nd, usuario, "Usuários", "Editou nome do usuário", `${email}: "${anterior}" → "${nome.trim()}"`, email);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  const removerUsuario = async (email) => {
+    if (email === usuario.email) { avisar("Você não pode remover o próprio usuário logado."); return; }
+    const admins = Object.entries(dados.usuarios).filter(([, u]) => u.perfil === "Administrador");
+    if (dados.usuarios[email].perfil === "Administrador" && admins.length === 1) {
+      avisar("Não é possível remover o último administrador do sistema."); return;
+    }
+    const { [email]: _, ...restantes } = dados.usuarios;
+    // Remove o usuário excluído dos vínculos de responsabilidade dos demais
+    const limpos = Object.fromEntries(Object.entries(restantes).map(([e, u]) =>
+      [e, u.administradores ? { ...u, administradores: u.administradores.filter((a) => a !== email) } : u]));
+    let nd = { ...dados, usuarios: limpos };
+    nd = comLog(nd, usuario, "Usuários", "Removeu usuário", `${(dados.usuarios[email] && dados.usuarios[email].nome) || ""} <${email}>`, email);
+    setDados(nd); await salvarDados(nd);
+    avisar("Usuário removido. Ele perde o acesso ao sistema; as solicitações já registradas são preservadas.");
+  };
+
+  // Redefinir senha: apaga a atual; o usuário cria uma nova no próximo acesso,
+  // ou o administrador define uma provisória digitada na hora (armazenada só como hash).
+  const limparSenha = async (email) => {
+    const { senha, ...semSenha } = dados.usuarios[email];
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: semSenha } };
+    nd = comLog(nd, usuario, "Usuários", "Redefiniu senha (usuário criará nova no próximo acesso)", email, email);
+    setDados(nd); await salvarDados(nd);
+    setResetEmail(null); setNovaSenha("");
+    avisar("Senha removida. O usuário criará uma nova no próximo acesso.");
+  };
+
+  const definirSenhaProvisoria = async (email) => {
+    if (novaSenha.length < 6) { avisar("A senha provisória deve ter ao menos 6 caracteres."); return; }
+    if (!criptoDisponivel()) { avisar("Este navegador não suporta o armazenamento seguro de senha."); return; }
+    const salt = gerarSalt();
+    const met = metodoHash();
+    const hash = await hashSenha(novaSenha, salt, met);
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...dados.usuarios[email], senha: { salt, hash, metodo: met } } } };
+    nd = comLog(nd, usuario, "Usuários", "Definiu senha provisória", email, email); // a senha em si nunca é registrada
+    setDados(nd); await salvarDados(nd);
+    setResetEmail(null); setNovaSenha("");
+    avisar("Senha provisória definida. Recomende ao usuário trocá-la (Redefinir → criar nova no próximo acesso).");
+  };
+
+  const th = { padding: 8, fontSize: 11.5, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" };
+  const td = { padding: "8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 14, color: CORES.azul };
+
+  return (
+    <Cartao style={{ maxWidth: 1040, margin: "0 auto", position: "relative" }}>
+      <div className="so-tela" style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
+        {[["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"]].map(([id, rot]) => (
+          <button key={id} onClick={() => setAba(id)} style={{
+            padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
+            background: aba === id ? CORES.azul : CORES.cinzaClaro, color: aba === id ? "#fff" : CORES.azul,
+          }}>{rot}</button>
+        ))}
+      </div>
+
+      {aba === "registros" && <TelaAuditoria dados={dados} />}
+
+      {aba === "usuarios" && (
+      <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Configurações — Usuários</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>
+        Somente usuários cadastrados aqui têm acesso ao sistema. Perfis: <strong>Usuário Comum</strong> e <strong>Administrador</strong>.
+        Cada usuário comum pode ter um ou mais <strong>administradores responsáveis</strong>: as solicitações dele são notificadas
+        apenas a esses responsáveis (sem vínculo definido, o alerta vai a todos os administradores).
+        As senhas são armazenadas apenas como hash criptográfico — nem os administradores conseguem visualizá-las.
+      </p>
+
+      {/* Cadastro de novo usuário */}
+      <div style={{ background: CORES.cinzaClaro, borderRadius: 10, padding: 16, marginBottom: 20 }}>
+        <strong style={{ color: CORES.azul, fontSize: 13, textTransform: "uppercase", letterSpacing: ".05em" }}>Cadastrar usuário</strong>
+        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.5fr 1fr auto", gap: 10, marginTop: 10, alignItems: "end" }}>
+          <Campo label="Nome"><input style={inputStyle} value={novo.nome} onChange={(e) => setNovo({ ...novo, nome: e.target.value })} placeholder="Nome completo" /></Campo>
+          <Campo label="E-mail"><input style={inputStyle} value={novo.email} onChange={(e) => setNovo({ ...novo, email: e.target.value })} placeholder={`nome.sobrenome${DOMINIO}`} /></Campo>
+          <Campo label="Perfil">
+            <select style={inputStyle} value={novo.perfil} onChange={(e) => setNovo({ ...novo, perfil: e.target.value })}>
+              <option>Usuário Comum</option><option>Administrador</option>
+            </select>
+          </Campo>
+          <Botao tipo="laranja" onClick={adicionarUsuario}>Adicionar</Botao>
+        </div>
+        <p style={{ fontSize: 11.5, color: CORES.cinza, margin: "8px 0 0" }}>O usuário cria a própria senha no primeiro acesso.</p>
+      </div>
+
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead><tr><th style={th}>Nome</th><th style={th}>E-mail</th><th style={th}>Perfil</th><th style={th}>Administradores responsáveis</th><th style={th}>Senha</th><th style={th}>Ações</th></tr></thead>
+        <tbody>
+          {Object.entries(dados.usuarios).map(([email, u]) => (
+            <tr key={email}>
+              <td style={td}>
+                <input style={{ ...inputStyle, padding: "5px 8px", fontSize: 13.5 }} defaultValue={u.nome} key={email + u.nome}
+                  onBlur={(e) => editarNome(email, e.target.value)} title="Clique para editar o nome" />
+              </td>
+              <td style={td}>{email}{email === usuario.email ? <span style={{ fontSize: 11, color: CORES.laranja }}> (você)</span> : null}</td>
+              <td style={td}>
+                <select style={{ ...inputStyle, width: 160, padding: "5px 8px", fontSize: 13.5 }} value={u.perfil} onChange={(e) => mudarPerfil(email, e.target.value)}>
+                  <option>Usuário Comum</option>
+                  <option>Administrador</option>
+                </select>
+              </td>
+              <td style={{ ...td, minWidth: 210 }}>
+                {u.perfil === "Administrador" ? (
+                  <span style={{ color: CORES.cinza, fontSize: 12.5 }}>— (é administrador)</span>
+                ) : (() => {
+                  const listaAdm = Object.entries(dados.usuarios).filter(([, x]) => x.perfil === "Administrador");
+                  const vinc = (u.administradores || []).filter((e2) => dados.usuarios[e2] && dados.usuarios[e2].perfil === "Administrador");
+                  return (
+                    <details>
+                      <summary style={{ cursor: "pointer", fontSize: 13, color: vinc.length ? CORES.azul : CORES.laranja, fontWeight: 600 }}>
+                        {vinc.length ? `${vinc.length} vinculado${vinc.length > 1 ? "s" : ""}: ${vinc.map((e2) => dados.usuarios[e2].nome.split(" ")[0]).join(", ")}` : "Nenhum — alerta irá a todos"}
+                      </summary>
+                      <div style={{ marginTop: 6, background: CORES.cinzaClaro, borderRadius: 6, padding: "8px 10px" }}>
+                        {listaAdm.map(([e2, adm]) => (
+                          <label key={e2} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, padding: "3px 0", cursor: "pointer" }}>
+                            <input type="checkbox" checked={vinc.includes(e2)} onChange={() => alternarVinculo(email, e2)}
+                              style={{ width: 15, height: 15, accentColor: CORES.laranja }} />
+                            {adm.nome} <span style={{ color: CORES.cinza }}>({e2})</span>
+                          </label>
+                        ))}
+                      </div>
+                    </details>
+                  );
+                })()}
+              </td>
+              <td style={{ ...td, fontSize: 12.5 }}>
+                {AUTENTICACAO_REAL
+                  ? <span style={{ color: CORES.cinza }}>Login Microsoft</span>
+                  : u.senha ? <span style={{ color: "seagreen" }}>Definida ✓</span> : <span style={{ color: CORES.laranja }}>Criará no 1º acesso</span>}
+              </td>
+              <td style={{ ...td, whiteSpace: "nowrap" }}>
+                {!AUTENTICACAO_REAL && <Botao tipo="contorno" style={{ padding: "4px 10px", fontSize: 12, marginRight: 6 }}
+                  onClick={() => { setResetEmail(resetEmail === email ? null : email); setNovaSenha(""); }}>Redefinir senha</Botao>}
+                <Botao tipo="perigo" style={{ padding: "4px 10px", fontSize: 12 }} disabled={email === usuario.email}
+                  title={email === usuario.email ? "Não é possível remover o próprio usuário" : "Remover acesso"}
+                  onClick={() => removerUsuario(email)}>Remover</Botao>
+                {resetEmail === email && (
+                  <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <input style={{ ...inputStyle, width: 180, padding: "5px 8px", fontSize: 13 }} type="password" value={novaSenha}
+                      onChange={(e) => setNovaSenha(e.target.value)} placeholder="Senha provisória (mín. 6)" />
+                    <Botao style={{ padding: "5px 10px", fontSize: 12 }} onClick={() => definirSenhaProvisoria(email)}>Definir</Botao>
+                    <Botao tipo="contorno" style={{ padding: "5px 10px", fontSize: 12 }} onClick={() => limparSenha(email)}
+                      title="O usuário criará a nova senha no próximo acesso">Limpar (criará no acesso)</Botao>
+                  </div>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      </div>
+      )}
+    </Cartao>
+  );
+}
+
+/* ============================================================
+   Login — Microsoft Entra ID (MSAL)
+   ------------------------------------------------------------
+   >>> CONFIGURAÇÃO PELA TI (Portal do Azure → Entra ID → Registros de Aplicativo):
+   1. Novo registro: "Solicitação de Compras Aura" | Conta somente neste diretório (single tenant)
+   2. Plataforma: SPA (Single-Page Application) | Redirect URI = URL onde este app será hospedado
+   3. Permissões delegadas (API do Microsoft Graph, com consentimento do admin):
+      User.Read | Mail.Send | Files.Read.All | Sites.ReadWrite.All | Sites.Manage.All
+   4. Copiar "ID do aplicativo (cliente)" e "ID do diretório (locatário)" para os campos abaixo.
+   Enquanto vazios, o app roda em MODO DEMONSTRAÇÃO (login simulado, sem validação real).
+   ============================================================ */
+const MSAL_CONFIG = {
+  clientId: "",   // ← TI: colar aqui o ID do aplicativo (cliente)
+  tenantId: "",   // ← TI: colar aqui o ID do diretório (locatário) da Aura Minerals
+};
+const AUTENTICACAO_REAL = !!(MSAL_CONFIG.clientId && MSAL_CONFIG.tenantId && typeof window !== "undefined" && window.msal);
+
+/* ============================================================
+   E-mails — templates e envio
+   - Modo real (Entra ID configurado): envio AUTOMÁTICO via Microsoft Graph (Mail.Send)
+   - Modo demonstração: abre o aplicativo de e-mail com a mensagem pronta (basta clicar Enviar)
+   ============================================================ */
+/* Layout padrão dos comunicados internos Aura (HTML de e-mail, estilos inline p/ Outlook) */
+const emailHtml = ({ subtitulo, saudacao, intro, cabecalhos, linhas, observacao }) => {
+  const ths = (cabecalhos || []).map((c) =>
+    `<th style="background:#F4614D;color:#ffffff;padding:8px 10px;font-size:12px;border:1px solid #e08574;text-align:left;white-space:nowrap;">${c}</th>`).join("");
+  const trs = (linhas || []).map((l) =>
+    `<tr>${l.map((v) => `<td style="padding:8px 10px;font-size:13px;color:#2D3D70;border:1px solid #B0B7C1;">${(v === undefined || v === null || v === "") ? "—" : v}</td>`).join("")}</tr>`).join("");
+  return `<div style="margin:0;padding:0;background:#ffffff;font-family:'Segoe UI',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:760px;margin:0 auto;border:1px solid #E4E8F0;">
+    <tr>
+      <td style="background:#F3F5FA;padding:28px 32px;border-bottom:4px solid #F4614D;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+          <td>
+            <div style="font-size:30px;font-weight:800;color:#2D3D70;line-height:1.15;">Comunicado<br/>Suprimentos</div>
+            <div style="width:130px;height:4px;background:#F4614D;margin:10px 0;font-size:0;">&nbsp;</div>
+            <div style="font-size:15px;color:#2D3D70;font-weight:600;">${subtitulo}</div>
+            <div style="font-size:12px;color:#8b93a5;margin-top:4px;">Equipe de Suprimentos — Aura Minerals</div>
+          </td>
+          <td align="right" valign="top" width="70">
+            <div style="width:46px;height:46px;background:#F4614D;border-radius:50%;font-size:0;">&nbsp;</div>
+          </td>
+        </tr></table>
+      </td>
+    </tr>
+    <tr><td style="padding:24px 32px 8px;">
+      <p style="font-size:14px;color:#2D3D70;margin:0 0 6px;">Prezado(a) <strong>${saudacao}</strong>,</p>
+      <p style="font-size:14px;color:#2D3D70;margin:0 0 16px;line-height:1.5;">${intro}</p>
+      ${ths ? `<p style="font-size:13px;color:#2D3D70;margin:0 0 8px;"><strong>Detalhe da requisição:</strong></p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+        <tr>${ths}</tr>${trs}
+      </table>` : ""}
+      ${observacao ? `<p style="font-size:12.5px;color:#2D3D70;margin:14px 0 0;line-height:1.5;">${observacao}</p>` : ""}
+    </td></tr>
+    <tr><td style="padding:20px 32px 22px;">
+      <div style="font-size:11px;color:#8b93a5;border-top:1px solid #B0B7C1;padding-top:10px;">
+        Mensagem automática do Sistema de Solicitação de Compras e Cadastros. Não responda a este e-mail.
+      </div>
+    </td></tr>
+    <tr><td style="background:#2D3D70;padding:12px 32px;">
+      <span style="color:#ffffff;font-weight:800;font-size:16px;letter-spacing:2px;">aura</span><span style="color:#F4614D;font-weight:800;font-size:16px;">&nbsp;&#9702;</span>
+    </td></tr>
+  </table>
+</div>`;
+};
+
+const RODAPE_EMAIL = "\n\n—\nSistema de Solicitação de Compras e Cadastros — Aura Minerals\nMensagem automática do sistema; não responda a este e-mail.";
+
+const tplAlertaAdmin = (solicitante, tipo, resumo, dataHora) => ({
+  assunto: `[Compras Aura] Nova solicitação de ${tipo} — ${solicitante}`,
+  corpo:
+`Olá, Administrador.
+
+Uma nova solicitação de ${tipo.toUpperCase()} foi registrada no sistema e aguarda sua análise.
+
+Solicitante: ${solicitante}
+Data/Hora: ${dataHora}
+
+Itens solicitados:
+${resumo}
+
+Acesse o sistema (menu Relatórios) para analisar, concluir ou cancelar a solicitação.${RODAPE_EMAIL}`,
+});
+
+const tplConfirmacao = (nome, tipo, resumo, dataHora) => ({
+  assunto: `[Compras Aura] Recebemos sua solicitação de ${tipo}`,
+  corpo:
+`Olá, ${nome.split(" ")[0]}.
+
+Sua solicitação de ${tipo.toUpperCase()} foi registrada com sucesso e os administradores do sistema já foram notificados.
+
+Data/Hora do registro: ${dataHora}
+
+Itens solicitados:
+${resumo}
+
+Você pode acompanhar o andamento pelo sistema, na tela de Relatórios. Você também será avisado por e-mail a cada etapa (solicitado, concluído ou cancelado).${RODAPE_EMAIL}`,
+});
+
+const tplEtapa = (nome, descricaoItem, etapa, detalhes, registradoPor) => ({
+  assunto: `[Compras Aura] Sua solicitação foi atualizada: ${etapa}`,
+  corpo:
+`Olá, ${nome.split(" ")[0]}.
+
+Houve uma atualização em uma solicitação sua no sistema.
+
+Item: ${descricaoItem}
+Nova etapa: ${etapa}
+${detalhes ? detalhes + "\n" : ""}Registrado por: ${registradoPor}
+
+Consulte os detalhes na tela de Relatórios do sistema.${RODAPE_EMAIL}`,
+});
+
+const linkMailto = (m) =>
+  `mailto:${m.para.join(",")}?subject=${encodeURIComponent(m.assunto)}&body=${encodeURIComponent(m.corpo)}`;
+
+async function enviarEmailGraph(msg) {
+  if (!AUTENTICACAO_REAL) return null; // sem Entra ID não há envio automático
+  try {
+    const app = obterMsal();
+    const conta = app.getAllAccounts()[0];
+    if (!conta) return null;
+    let token;
+    try { token = (await app.acquireTokenSilent({ scopes: ["Mail.Send"], account: conta })).accessToken; }
+    catch (e) { token = (await app.acquireTokenPopup({ scopes: ["Mail.Send"] })).accessToken; }
+    const resp = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: {
+          subject: msg.assunto,
+          body: msg.corpoHtml ? { contentType: "HTML", content: msg.corpoHtml } : { contentType: "Text", content: msg.corpo },
+          toRecipients: msg.para.map((a) => ({ emailAddress: { address: a } })),
+        },
+        saveToSentItems: true,
+      }),
+    });
+    return { enviado: resp.ok };
+  } catch (e) { return null; }
+}
+
+let _msalApp = null;
+function obterMsal() {
+  if (!_msalApp) {
+    _msalApp = new window.msal.PublicClientApplication({
+      auth: {
+        clientId: MSAL_CONFIG.clientId,
+        authority: `https://login.microsoftonline.com/${MSAL_CONFIG.tenantId}`, // single tenant: só contas reais da Aura
+        redirectUri: window.location.origin + window.location.pathname,
+      },
+      cache: { cacheLocation: "sessionStorage" },
+    });
+  }
+  return _msalApp;
+}
+
+/* ============================================================
+   DADOS MULTIUSUÁRIO — SharePoint Lists via Microsoft Graph
+   ------------------------------------------------------------
+   Com o Entra ID ativo, solicitações, cadastros e usuários ficam em
+   listas compartilhadas em um site do SharePoint (ambiente de teste) — todos os usuários
+   veem os mesmos dados. As listas são criadas automaticamente na 1ª vez.
+   Permissões Graph (delegadas): Sites.ReadWrite.All (+ Sites.Manage.All
+   apenas para a criação inicial das listas).
+   Sem Entra ID (demonstração), os dados permanecem locais no navegador.
+
+   ============================================================ */
+const SP_SITE_HOST = "tenant-teste.sharepoint.com";
+const SP_SITE_PATH = "/sites/Site_Teste";
+const _SP_SUFIXO = AMBIENTE === "teste" ? "Teste" : "";
+const SP_LISTAS = { compras: "AuraSolicitacoesCompras" + _SP_SUFIXO, cadastros: "AuraSolicitacoesCadastros" + _SP_SUFIXO, usuarios: "AuraUsuariosSistema" + _SP_SUFIXO, auditoria: "AuraLogAuditoria" + _SP_SUFIXO };
+
+let _spSiteId = null;
+let _spListIds = {};
+let _spItemIds = { compras: {}, cadastros: {}, usuarios: {}, auditoria: {} }; // id do registro -> id do item na lista
+let _ultimoSync = null; // último estado sincronizado (base do diff)
+
+async function tokenGraph(scopes) {
+  const app = obterMsal();
+  const conta = app.getAllAccounts()[0];
+  if (!conta) throw new Error("sem sessão Microsoft");
+  try { return (await app.acquireTokenSilent({ scopes, account: conta })).accessToken; }
+  catch (e) { return (await app.acquireTokenPopup({ scopes })).accessToken; }
+}
+
+async function gfetch(url, opts = {}, scopes = ["Sites.ReadWrite.All"]) {
+  const t = await tokenGraph(scopes);
+  const r = await fetch("https://graph.microsoft.com/v1.0" + url, {
+    ...opts,
+    headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json", ...(opts.headers || {}) },
+  });
+  if (!r.ok) throw new Error(`Graph ${r.status} em ${url}`);
+  return r;
+}
+
+async function spSite() {
+  if (_spSiteId) return _spSiteId;
+  const r = await gfetch(`/sites/${SP_SITE_HOST}:${SP_SITE_PATH}`);
+  _spSiteId = (await r.json()).id;
+  return _spSiteId;
+}
+
+async function spLista(chave) {
+  if (_spListIds[chave]) return _spListIds[chave];
+  const site = await spSite();
+  const nome = SP_LISTAS[chave];
+  try {
+    const r = await gfetch(`/sites/${site}/lists?$filter=displayName eq '${nome}'`);
+    const j = await r.json();
+    if (j.value && j.value.length) { _spListIds[chave] = j.value[0].id; return _spListIds[chave]; }
+  } catch (e) { /* segue para criação */ }
+  // Cria a lista automaticamente (1ª execução) — requer Sites.Manage.All
+  const r = await gfetch(`/sites/${site}/lists`, {
+    method: "POST",
+    body: JSON.stringify({
+      displayName: nome,
+      list: { template: "genericList" },
+      columns: [{ name: "Dados", text: { allowMultipleLines: true, textType: "plain" } }],
+    }),
+  }, ["Sites.Manage.All"]);
+  const j = await r.json();
+  if (!j.id) throw new Error("não foi possível criar a lista " + nome);
+  _spListIds[chave] = j.id;
+  return j.id;
+}
+
+async function spCarregarLista(chave) {
+  const site = await spSite();
+  const lista = await spLista(chave);
+  let url = `/sites/${site}/lists/${lista}/items?expand=fields(select=Title,Dados)&$top=200`;
+  const regs = [];
+  _spItemIds[chave] = {};
+  while (url) {
+    const r = await gfetch(url);
+    const j = await r.json();
+    for (const it of (j.value || [])) {
+      try {
+        const id = it.fields.Title;
+        _spItemIds[chave][id] = it.id;
+        regs.push({ id, dado: JSON.parse(it.fields.Dados || "{}") });
+      } catch (e) { /* item corrompido: ignora */ }
+    }
+    url = j["@odata.nextLink"] ? j["@odata.nextLink"].replace("https://graph.microsoft.com/v1.0", "") : null;
+  }
+  return regs;
+}
+
+async function spCriar(chave, id, dado) {
+  const site = await spSite();
+  const lista = await spLista(chave);
+  const r = await gfetch(`/sites/${site}/lists/${lista}/items`, {
+    method: "POST",
+    body: JSON.stringify({ fields: { Title: String(id), Dados: JSON.stringify(dado) } }),
+  });
+  const j = await r.json();
+  if (j.id) _spItemIds[chave][id] = j.id;
+}
+
+async function spAtualizar(chave, id, dado) {
+  const itemId = _spItemIds[chave][id];
+  if (!itemId) { await spCriar(chave, id, dado); return; }
+  const site = await spSite();
+  const lista = await spLista(chave);
+  await gfetch(`/sites/${site}/lists/${lista}/items/${itemId}/fields`, {
+    method: "PATCH",
+    body: JSON.stringify({ Dados: JSON.stringify(dado) }),
+  });
+}
+
+async function spExcluir(chave, id) {
+  const itemId = _spItemIds[chave][id];
+  if (!itemId) return;
+  const site = await spSite();
+  const lista = await spLista(chave);
+  await gfetch(`/sites/${site}/lists/${lista}/items/${itemId}`, { method: "DELETE" });
+  delete _spItemIds[chave][id];
+}
+
+// Carrega o estado compartilhado completo das listas
+async function carregarDoGraph() {
+  const [cps, cds, us, aud] = await Promise.all([
+    spCarregarLista("compras"), spCarregarLista("cadastros"), spCarregarLista("usuarios"), spCarregarLista("auditoria"),
+  ]);
+  const usuarios = {};
+  us.forEach((r) => { usuarios[r.id] = r.dado; });
+  // Garante o primeiro administrador (0.1)
+  if (!usuarios[PRIMEIRO_ADMIN]) {
+    usuarios[PRIMEIRO_ADMIN] = { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "Administrador" };
+    await spCriar("usuarios", PRIMEIRO_ADMIN, usuarios[PRIMEIRO_ADMIN]);
+  } else if (usuarios[PRIMEIRO_ADMIN].perfil !== "Administrador") {
+    usuarios[PRIMEIRO_ADMIN].perfil = "Administrador";
+    await spAtualizar("usuarios", PRIMEIRO_ADMIN, usuarios[PRIMEIRO_ADMIN]);
+  }
+  // Auditoria: ordenada por carimbo (ts) para exibição estável e cronológica
+  const auditoria = aud.map((r) => r.dado).sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || "")));
+  return { compras: cps.map((r) => r.dado), cadastros: cds.map((r) => r.dado), usuarios, auditoria };
+}
+
+// Envia ao SharePoint apenas o que mudou (criações, alterações e exclusões)
+async function sincronizarGraph(anterior, novo) {
+  for (const chave of ["compras", "cadastros"]) {
+    const antes = new Map((anterior[chave] || []).map((x) => [x.id, x]));
+    const depois = new Map((novo[chave] || []).map((x) => [x.id, x]));
+    for (const [id, reg] of depois) {
+      if (!antes.has(id)) await spCriar(chave, id, reg);
+      else if (JSON.stringify(antes.get(id)) !== JSON.stringify(reg)) await spAtualizar(chave, id, reg);
+    }
+    for (const id of antes.keys()) if (!depois.has(id)) await spExcluir(chave, id);
+  }
+  // Usuários: nunca grava hash de senha na lista compartilhada (modo real usa o login Microsoft)
+  const semSenha = (u) => { const { senha, ...pub } = u || {}; return pub; };
+  const uAntes = anterior.usuarios || {};
+  const uDepois = novo.usuarios || {};
+  for (const [email, u] of Object.entries(uDepois)) {
+    if (!uAntes[email]) await spCriar("usuarios", email, semSenha(u));
+    else if (JSON.stringify(semSenha(uAntes[email])) !== JSON.stringify(semSenha(u))) await spAtualizar("usuarios", email, semSenha(u));
+  }
+  for (const email of Object.keys(uAntes)) if (!uDepois[email]) await spExcluir("usuarios", email);
+  // Auditoria: APPEND-ONLY — apenas novos registros são criados; nunca se altera ou exclui (imutabilidade SOX)
+  const audAntes = new Set((anterior.auditoria || []).map((x) => x.id));
+  for (const reg of (novo.auditoria || [])) {
+    if (!audAntes.has(reg.id)) await spCriar("auditoria", reg.id, reg);
+  }
+}
+
+const fotografar = (d) => JSON.parse(JSON.stringify({ compras: d.compras, cadastros: d.cadastros, usuarios: d.usuarios, auditoria: d.auditoria || [] }));
+
+// Anexos dos cadastros: enviados para a pasta AuraAnexosCadastros na biblioteca do site
+let _pastaAnexosOk = false;
+async function garantirPastaAnexos() {
+  if (_pastaAnexosOk) return;
+  const site = await spSite();
+  try {
+    await gfetch(`/sites/${site}/drive/root/children`, {
+      method: "POST",
+      body: JSON.stringify({ name: "AuraAnexosCadastros", folder: {}, "@microsoft.graph.conflictBehavior": "fail" }),
+    });
+  } catch (e) { /* já existe */ }
+  _pastaAnexosOk = true;
+}
+async function enviarAnexoSharePoint(arquivo) {
+  await garantirPastaAnexos();
+  const site = await spSite();
+  const nomeSeguro = Date.now().toString(36) + "_" + arquivo.name.replace(/[^\w.\-]+/g, "_");
+  const t = await tokenGraph(["Sites.ReadWrite.All"]);
+  const r = await fetch(`https://graph.microsoft.com/v1.0/sites/${site}/drive/root:/AuraAnexosCadastros/${nomeSeguro}:/content`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${t}`, "Content-Type": arquivo.type || "application/octet-stream" },
+    body: await arquivo.arrayBuffer(),
+  });
+  if (!r.ok) throw new Error("upload do anexo falhou: " + r.status);
+  const j = await r.json();
+  return { nome: arquivo.name, url: j.webUrl };
+}
+
+/* Mascote "Caquito" — usa ./caquito.png; se o arquivo não existir, some sem quebrar o layout */
+const Mascote = ({ tamanho = 120, style }) => (
+  <img src="./caquito.png" alt="Caquito — mascote da Aura" width={tamanho} height={tamanho}
+    onError={(e) => { e.currentTarget.style.display = "none"; }}
+    style={{ objectFit: "contain", display: "block", ...style }} />
+);
+
+/* Faixa fixa indicando o ambiente de TESTES (não aparece em Homologação) */
+const FaixaAmbiente = () => AMBIENTE !== "teste" ? null : (
+  <div style={{ background: CORES.laranja, color: "#fff", textAlign: "center", fontSize: 12.5, fontWeight: 700, padding: "5px 12px", letterSpacing: ".02em" }}>
+    🧪 AMBIENTE DE TESTES — dados fictícios. O ambiente oficial (Homologação) é separado.
+  </div>
+);
+
+function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroAdmin }) {
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [senha2, setSenha2] = useState("");
+  const [fase, setFase] = useState("login"); // "login" | "criarSenha"
+  const [erro, setErro] = useState("");
+  const [carregando, setCarregando] = useState(false);
+
+  // ---- Modo real: login via popup da Microsoft (valida credenciais de verdade) ----
+  const entrarMicrosoft = async () => {
+    setErro(""); setCarregando(true);
+    try {
+      const resp = await obterMsal().loginPopup({ scopes: ["User.Read", "Mail.Send"] });
+      const conta = resp.account;
+      const e = (conta.username || "").toLowerCase();
+      if (!e.endsWith(DOMINIO)) {
+        setErro(`Esta conta não pertence ao domínio ${DOMINIO}.`);
+      } else {
+        const r = await aoEntrar(e, conta.name); // valida se o usuário está cadastrado no sistema
+        if (r && r.erro) setErro(r.erro);
+      }
+    } catch (ex) {
+      if (!String(ex).includes("user_cancelled")) setErro("Falha na autenticação Microsoft. Tente novamente ou contate a TI.");
+    } finally { setCarregando(false); }
+  };
+
+  // ---- Modo demonstração: e-mail cadastrado + senha ----
+  const entrarDemo = async () => {
+    setErro("");
+    const e = email.trim().toLowerCase();
+    if (!e.endsWith(DOMINIO)) { setErro(`Acesso permitido apenas para contas do domínio ${DOMINIO}.`); return; }
+    setCarregando(true);
+    const r = await tentarLoginDemo(e, senha);
+    setCarregando(false);
+    if (r.erro) setErro(r.erro);
+    else if (r.criarSenha) { setFase("criarSenha"); setSenha(""); }
+  };
+
+  const confirmarNovaSenha = async () => {
+    setErro("");
+    if (senha.length < 6) { setErro("A senha deve ter ao menos 6 caracteres."); return; }
+    if (senha !== senha2) { setErro("As senhas não conferem."); return; }
+    setCarregando(true);
+    const r = await criarSenhaELogar(email.trim().toLowerCase(), senha);
+    setCarregando(false);
+    if (r && r.erro) setErro(r.erro);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: CORES.cinzaClaro, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
+      <div style={{ background: "#fff", borderRadius: 14, padding: 40, width: "min(420px, 92%)", borderTop: `5px solid ${CORES.laranja}`, boxShadow: "0 12px 40px rgba(45,61,112,.12)" }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ fontSize: 26, fontWeight: 800, color: CORES.azul, letterSpacing: ".02em" }}>AURA <span style={{ color: CORES.laranja }}>360</span> Planta</div>
+          <div style={{ fontSize: 13, color: CORES.cinza, marginTop: 4, textTransform: "uppercase", letterSpacing: ".12em" }}>Portal integrado · Aura Minerals</div>
+          {AMBIENTE === "teste" && <div style={{ marginTop: 10, display: "inline-block", background: CORES.laranja, color: "#fff", borderRadius: 8, padding: "3px 12px", fontSize: 11.5, fontWeight: 700, letterSpacing: ".03em" }}>🧪 AMBIENTE DE TESTES</div>}
+        </div>
+        {AUTENTICACAO_REAL ? (
+          <div>
+            <Botao onClick={entrarMicrosoft} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
+              {carregando ? "Autenticando…" : "Entrar com conta Microsoft"}
+            </Botao>
+            {erro && <p style={{ color: CORES.laranja, fontSize: 13, margin: "10px 0 0" }}>{erro}</p>}
+            <p style={{ fontSize: 11.5, color: CORES.cinza, marginTop: 16, textAlign: "center", lineHeight: 1.5 }}>
+              Autenticação via Microsoft Entra ID, restrita ao diretório da Aura Minerals.
+            </p>
+          </div>
+        ) : (
+          <div>
+            <div style={{ background: "rgba(244,97,77,.08)", border: `1px solid ${CORES.laranja}`, borderRadius: 8, padding: "10px 12px", fontSize: 12, color: CORES.azul, marginBottom: 14, lineHeight: 1.5 }}>
+              <strong style={{ color: CORES.laranja }}>⚠ MODO DEMONSTRAÇÃO</strong> — acesso restrito a usuários cadastrados pelo administrador.
+              A validação de credenciais reais na Microsoft é ativada quando a TI registrar o app no Entra ID.
+            </div>
+            {fase === "login" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <Campo label={`E-mail corporativo (${DOMINIO})`}>
+                  <input style={inputStyle} value={email} placeholder={`nome.sobrenome${DOMINIO}`}
+                    onChange={(e) => { setEmail(e.target.value); setErro(""); }} />
+                </Campo>
+                <Campo label="Senha">
+                  <input style={inputStyle} type="password" value={senha} placeholder="Sua senha"
+                    onChange={(e) => { setSenha(e.target.value); setErro(""); }}
+                    onKeyDown={(e) => e.key === "Enter" && entrarDemo()} />
+                </Campo>
+                {erro && <p style={{ color: CORES.laranja, fontSize: 13, margin: 0 }}>{erro}</p>}
+                <Botao onClick={entrarDemo} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
+                  {carregando ? "Verificando…" : "Entrar"}
+                </Botao>
+                <p style={{ fontSize: 11.5, color: CORES.cinza, margin: 0, textAlign: "center" }}>
+                  Sem acesso? Solicite seu cadastro a um administrador do sistema.
+                </p>
+                {resetPrimeiroAdmin && (
+                  <button type="button" onClick={async () => {
+                    await resetPrimeiroAdmin();
+                    setEmail(PRIMEIRO_ADMIN); setSenha(""); setErro("");
+                    avisar("Senha do primeiro administrador redefinida. Clique em Entrar para criar uma nova senha.");
+                  }} style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", padding: 0 }}>
+                    Primeiro administrador sem acesso? Redefinir minha senha
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ fontSize: 13.5, color: CORES.azul, lineHeight: 1.5 }}>
+                  <strong>Primeiro acesso de {email.trim().toLowerCase()}.</strong><br />
+                  Crie sua senha pessoal. Ela será armazenada apenas de forma criptografada (hash irreversível).
+                </div>
+                <Campo label="Nova senha (mín. 6 caracteres)">
+                  <input style={inputStyle} type="password" autoFocus value={senha} onChange={(e) => { setSenha(e.target.value); setErro(""); }} />
+                </Campo>
+                <Campo label="Confirmar senha">
+                  <input style={inputStyle} type="password" value={senha2} onChange={(e) => { setSenha2(e.target.value); setErro(""); }}
+                    onKeyDown={(e) => e.key === "Enter" && confirmarNovaSenha()} />
+                </Campo>
+                {erro && <p style={{ color: CORES.laranja, fontSize: 13, margin: 0 }}>{erro}</p>}
+                <Botao onClick={confirmarNovaSenha} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
+                  {carregando ? "Salvando…" : "Criar senha e entrar"}
+                </Botao>
+                <button onClick={() => { setFase("login"); setSenha(""); setSenha2(""); setErro(""); }}
+                  style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>← Voltar</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   App principal
+   ============================================================ */
+/* ============================================================
+   AURA 360 Planta — Home do portal (áreas macro)
+   ============================================================ */
+function PortalHome({ nome, aoAbrir }) {
+  // "COM e SEM o Caquito": alterna a exibição do mascote na Home (lembra a escolha)
+  const [mostrarMascote, setMostrarMascote] = useState(() => {
+    try { return localStorage.getItem("aura__mascoteHome") !== "0"; } catch (e) { return true; }
+  });
+  const alternarMascote = () => setMostrarMascote((v) => {
+    const nv = !v;
+    try { localStorage.setItem("aura__mascoteHome", nv ? "1" : "0"); } catch (e) {}
+    return nv;
+  });
+
+  const areas = [
+    { id: "ADMIN", titulo: "Administrativo", icone: "📋", cor: CORES.azul, ativo: true,
+      desc: "Requisições, compras, cadastros e serviços.",
+      itens: ["Requisições de Materiais e Compras", "Cadastro de Itens", "Solicitação de Serviços"] },
+    { id: "SEG", titulo: "Segurança", icone: "🦺", cor: "#b45309", ativo: false,
+      desc: "Saúde e segurança do trabalho (SSMA).",
+      itens: ["Inspeções", "Abordagens", "Ações", "EPIs"] },
+    { id: "OPER", titulo: "Operação", icone: "🏭", cor: "#0f6b3f", ativo: false,
+      desc: "Indicadores e resumos operacionais.",
+      itens: ["Resumo Reagentes"] },
+  ];
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 22, flexWrap: "wrap" }}>
+        {mostrarMascote && <Mascote tamanho={96} style={{ flex: "0 0 auto" }} />}
+        <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+          <h1 style={{ color: CORES.azul, margin: "0 0 4px", fontSize: 26 }}>Olá, {nome.split(" ")[0]}. Bem-vindo ao AURA 360 Planta.</h1>
+          <p style={{ color: CORES.cinza, fontSize: 14, margin: 0 }}>Selecione uma área para começar.</p>
+        </div>
+        <button type="button" onClick={alternarMascote}
+          style={{ border: `1px solid ${CORES.cinza}`, background: "#fff", color: CORES.azul, borderRadius: 20, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", flex: "0 0 auto" }}>
+          {mostrarMascote ? "Ocultar mascote" : "Mostrar mascote"}
+        </button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 18 }}>
+        {areas.map((a) => (
+          <div key={a.id} onClick={() => aoAbrir(a.id)} style={{
+            background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 14, padding: "24px 22px", cursor: "pointer",
+            transition: "transform .15s, box-shadow .15s", borderTop: `4px solid ${a.cor}`, position: "relative",
+          }}
+            onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = "0 12px 28px rgba(45,61,112,.15)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}>
+            {!a.ativo && <span style={{ position: "absolute", top: 14, right: 14, fontSize: 10.5, fontWeight: 700, color: "#b45309", background: "#fff4e6", border: "1px solid #f0c98a", borderRadius: 10, padding: "2px 8px" }}>Em breve</span>}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ fontSize: 34 }}>{a.icone}</div>
+              <div style={{ fontWeight: 800, color: CORES.azul, fontSize: 20 }}>{a.titulo}</div>
+            </div>
+            <div style={{ fontSize: 13, color: CORES.azul, opacity: .82, margin: "10px 0 0", fontWeight: 600 }}>{a.desc}</div>
+            <ul style={{ margin: "8px 0 0", padding: "0 0 0 18px", color: CORES.cinza, fontSize: 13, lineHeight: 1.7 }}>
+              {a.itens.map((it) => <li key={it}>{it}</li>)}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EmDesenvolvimento({ titulo, icone, itens, aoVoltar }) {
+  return (
+    <div>
+      <button onClick={aoVoltar} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>← Voltar ao início</button>
+      <Cartao style={{ maxWidth: 640, margin: "24px auto", textAlign: "center", padding: "48px 32px", borderTop: `4px solid ${CORES.laranja}` }}>
+        <div style={{ fontSize: 56 }}>🚧</div>
+        <h2 style={{ color: CORES.azul, margin: "10px 0 6px" }}>{icone} {titulo}</h2>
+        <div style={{ display: "inline-block", background: "#fff4e6", border: "1px solid #f0c98a", color: "#b45309", fontWeight: 700, borderRadius: 10, padding: "10px 18px", margin: "8px 0 20px", fontSize: 15 }}>
+          Estamos em desenvolvimento.
+        </div>
+        <p style={{ color: CORES.cinza, fontSize: 14, margin: "0 0 14px" }}>Módulos previstos para esta área:</p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+          {itens.map((it) => <span key={it} style={{ background: CORES.cinzaClaro, color: CORES.azul, borderRadius: 20, padding: "6px 14px", fontSize: 13, border: `1px solid ${CORES.cinza}` }}>{it}</span>)}
+        </div>
+      </Cartao>
+    </div>
+  );
+}
+
+function App() {
+  const [dados, setDados] = useState(null);
+  const [usuario, setUsuario] = useState(null);
+  const [area, setArea] = useState(null); // null = Home do portal | "ADMIN" | "SEG" | "OPER"
+  const [tela, setTela] = useState("MENU"); // navegação dentro da área Administrativo
+  const [emails, setEmails] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      const d = await carregarDados();
+      setDados(d);
+      try {
+        const s = await window.storage.get(SESSION_KEY, false);
+        if (s && s.value) {
+          const email = JSON.parse(s.value);
+          if (d.usuarios[email]) setUsuario({ email, ...d.usuarios[email] });
+        }
+      } catch (e) { /* sem sessão */ }
+    })();
+  }, []);
+
+  // Acesso restrito: apenas usuários cadastrados entram no sistema
+  const concluirLogin = async (email, nomeOficial, d0) => {
+    let d = d0 || dados || dadosVazios();
+    if (nomeOficial && d.usuarios[email] && d.usuarios[email].nome !== nomeOficial) {
+      d = { ...d, usuarios: { ...d.usuarios, [email]: { ...d.usuarios[email], nome: nomeOficial } } };
+      setDados(d); await salvarDados(d);
+    }
+    const perfilU = d.usuarios[email] || {};
+    d = comLog(d, { email, nome: perfilU.nome, perfil: perfilU.perfil }, "Acesso", "Entrou no sistema", AUTENTICACAO_REAL ? "Login Microsoft (Entra ID)" : "Login (modo demonstração)", email);
+    setDados(d); await salvarDados(d);
+    setUsuario({ email, ...d.usuarios[email] });
+    try { await window.storage.set(SESSION_KEY, JSON.stringify(email), false); } catch (e) {}
+    setArea(null); setTela("MENU");
+  };
+
+  // Modo real (Entra ID): a Microsoft valida a credencial; o SharePoint traz os dados compartilhados
+  const entrar = async (email, nomeOficial) => {
+    let d = dados || dadosVazios();
+    if (AUTENTICACAO_REAL) {
+      try {
+        const dG = await carregarDoGraph();
+        d = { ...d, ...dG };
+        _ultimoSync = fotografar(d);
+        setDados(d);
+        try { await window.storage.set(STORAGE_KEY, JSON.stringify(d), true); } catch (e) {}
+      } catch (e) {
+        console.error(e);
+        return { erro: "Conta autenticada, mas não foi possível acessar as listas do sistema no SharePoint. Peça à TI para verificar as permissões do aplicativo (Sites.ReadWrite.All e Sites.Manage.All)." };
+      }
+    }
+    if (!d.usuarios[email]) return { erro: "Conta autenticada, mas não cadastrada no sistema. Solicite acesso a um administrador." };
+    await concluirLogin(email, nomeOficial, d);
+    return { ok: true };
+  };
+
+  // Modo demonstração: e-mail cadastrado + senha (hash)
+  const tentarLoginDemo = async (email, senha) => {
+    const d = dados || dadosVazios();
+    const u = d.usuarios[email];
+    if (!u) return { erro: "E-mail não cadastrado. Solicite acesso a um administrador do sistema." };
+    if (!u.senha) return { criarSenha: true }; // primeiro acesso: define a própria senha
+    if (!criptoDisponivel()) return { erro: "Este navegador não suporta a verificação segura de senha." };
+    try {
+      const h = await hashSenha(senha || "", u.senha.salt, u.senha.metodo);
+      if (h !== u.senha.hash) return { erro: "Senha incorreta." };
+    } catch (e) { return { erro: "Falha na verificação da senha." }; }
+    await concluirLogin(email);
+    return { ok: true };
+  };
+
+  const criarSenhaELogar = async (email, senha) => {
+    const d0 = dados || dadosVazios();
+    if (!d0.usuarios[email]) return { erro: "E-mail não cadastrado." };
+    if (!criptoDisponivel()) return { erro: "Este navegador não suporta o armazenamento seguro de senha." };
+    try {
+      const salt = gerarSalt();
+      const met = metodoHash();
+      const hash = await hashSenha(senha, salt, met);
+      const d = { ...d0, usuarios: { ...d0.usuarios, [email]: { ...d0.usuarios[email], senha: { salt, hash, metodo: met } } } };
+      setDados(d); await salvarDados(d);
+      await concluirLogin(email, undefined, d);
+      return { ok: true };
+    } catch (e) { return { erro: "Falha ao salvar a senha." }; }
+  };
+
+  // Recuperação (modo demonstração): limpa a senha do primeiro administrador para que ele
+  // crie uma nova no próximo acesso — evita bloqueio caso a senha seja esquecida.
+  const resetPrimeiroAdmin = async () => {
+    const d0 = dados || dadosVazios();
+    const u = d0.usuarios[PRIMEIRO_ADMIN] || { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "Administrador" };
+    const { senha, ...semSenha } = u;
+    let nd = { ...d0, usuarios: { ...d0.usuarios, [PRIMEIRO_ADMIN]: { ...semSenha, perfil: "Administrador" } } };
+    nd = comLog(nd, { email: PRIMEIRO_ADMIN, nome: semSenha.nome, perfil: "Administrador" }, "Acesso", "Redefiniu a própria senha (primeiro administrador) pela tela de login", "", PRIMEIRO_ADMIN);
+    setDados(nd); await salvarDados(nd);
+    return { ok: true };
+  };
+
+  // Multiusuário: recarrega os dados compartilhados a cada 60s (modo Entra ID)
+  useEffect(() => {
+    if (!usuario || !AUTENTICACAO_REAL) return;
+    const t = setInterval(async () => {
+      try {
+        const dG = await carregarDoGraph();
+        _ultimoSync = fotografar(dG);
+        setDados((prev) => ({ ...prev, ...dG }));
+      } catch (e) { /* offline momentâneo: tenta no próximo ciclo */ }
+    }, 60000);
+    return () => clearInterval(t);
+  }, [usuario]);
+
+  const sair = async () => {
+    if (dados && usuario) {
+      const d = comLog(dados, usuario, "Acesso", "Saiu do sistema", "", usuario.email);
+      setDados(d); await salvarDados(d);
+    }
+    setUsuario(null); setArea(null); setTela("MENU");
+    try { await window.storage.delete(SESSION_KEY, false); } catch (e) {}
+  };
+
+  const listaAdmins = (d) => Object.entries(d.usuarios).filter(([, u]) => u.perfil === "Administrador").map(([e]) => e);
+
+  // Tenta envio automático (Graph); sem Entra ID, prepara o e-mail para abrir no Outlook
+  const notificar = async (mensagens) => {
+    const resultados = [];
+    for (const m of mensagens) {
+      const r = await enviarEmailGraph(m);
+      resultados.push({ ...m, enviado: !!(r && r.enviado) });
+    }
+    setEmails({ resultados });
+  };
+
+  // Novos pedidos: confirmação ao solicitante + alerta aos administradores RESPONSÁVEIS pelo solicitante
+  const notificarSolicitacao = (tipo, u, d, resumo, dataHora, tabela) => {
+    // Administradores vinculados ao usuário; sem vínculo definido, alerta todos (garantia de que nada se perde)
+    const vinculados = ((d.usuarios[u.email] && d.usuarios[u.email].administradores) || [])
+      .filter((e) => d.usuarios[e] && d.usuarios[e].perfil === "Administrador");
+    const admins = vinculados.length ? vinculados : listaAdmins(d);
+    const rotuloAdmins = vinculados.length
+      ? `Alerta aos administradores responsáveis (${tipo})`
+      : `Alerta aos administradores (${tipo}) — solicitante sem responsável vinculado`;
+    const htmlAdmin = tabela ? emailHtml({
+      subtitulo: `Nova Solicitação de ${tipo}`,
+      saudacao: "Administrador(a)",
+      intro: `Informamos que uma nova solicitação de <strong>${tipo.toUpperCase()}</strong> foi registrada no sistema por <strong>${u.nome}</strong> em ${dataHora} e aguarda sua análise.`,
+      cabecalhos: tabela.cabecalhos, linhas: tabela.linhas,
+      observacao: "Acesse o sistema (menu <strong>Relatórios</strong>) para analisar, concluir ou cancelar a solicitação.",
+    }) : undefined;
+    const htmlUsuario = tabela ? emailHtml({
+      subtitulo: `Recebemos sua Solicitação de ${tipo}`,
+      saudacao: u.nome,
+      intro: `Sua solicitação de <strong>${tipo.toUpperCase()}</strong> foi registrada com sucesso em ${dataHora}. Os administradores do sistema já foram notificados.`,
+      cabecalhos: tabela.cabecalhos, linhas: tabela.linhas,
+      observacao: "Você pode acompanhar o andamento pelo sistema e será avisado(a) por e-mail a cada etapa (solicitado, concluído ou cancelado).",
+    }) : undefined;
+    notificar([
+      { rotulo: "Confirmação ao solicitante", para: [u.email], ...tplConfirmacao(u.nome, tipo, resumo, dataHora), corpoHtml: htmlUsuario },
+      { rotulo: rotuloAdmins, para: admins, ...tplAlertaAdmin(u.nome, tipo, resumo, dataHora), corpoHtml: htmlAdmin },
+    ]);
+  };
+
+  // Mudança de etapa: informa o solicitante original (comunicado HTML padrão Aura)
+  const notificarEtapa = (registro, etapa, detalhes, registradoPor) => {
+    if (!registro.email) return;
+    const html = emailHtml({
+      subtitulo: `Atualização de Solicitação — ${etapa}`,
+      saudacao: registro.solicitante,
+      intro: `Houve uma atualização em uma solicitação sua registrada no sistema.`,
+      cabecalhos: ["Item", "Nova etapa", "Detalhes", "Registrado por", "Data/Hora"],
+      linhas: [[registro.descricao || "", etapa, detalhes || "—", registradoPor, agoraStr()]],
+      observacao: "Consulte os detalhes completos na tela de <strong>Relatórios</strong> do sistema.",
+    });
+    notificar([
+      { rotulo: `Aviso ao solicitante — ${etapa}`, para: [registro.email], ...tplEtapa(registro.solicitante, registro.descricao || "", etapa, detalhes, registradoPor), corpoHtml: html },
+    ]);
+  };
+
+  if (!dados) return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: CORES.cinzaClaro, color: CORES.azul, fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
+      Carregando sistema…
+    </div>
+  );
+  if (!usuario) return <TelaLogin aoEntrar={entrar} tentarLoginDemo={tentarLoginDemo} criarSenhaELogar={criarSenhaELogar} resetPrimeiroAdmin={resetPrimeiroAdmin} />;
+
+  // perfil sempre atualizado (caso um admin altere)
+  const usuarioAtual = { ...usuario, ...(dados.usuarios[usuario.email] || {}) };
+
+  const MENU = [
+    { id: "COMPRAS", rotulo: "Solicitação de Compras", icone: "🛒", desc: "Requisite itens da base de materiais" },
+    { id: "CADASTROS", rotulo: "Solicitação de Cadastros", icone: "📋", desc: "Solicite cadastro de novos materiais" },
+    { id: "MATERIAIS", rotulo: "Atualização de Materiais", icone: "⟳", desc: "Sincronize a base MateriaisDeCompra.csv" },
+    { id: "RELATORIOS", rotulo: "Relatórios de Compras / Cadastros", icone: "📊", desc: "Consulte, filtre, conclua e exporte" },
+  ];
+
+  return (
+    <div style={{ minHeight: "100vh", background: CORES.cinzaClaro, fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
+      <FaixaAmbiente />
+      <style>{`
+        @media print {
+          @page { size: A4 landscape; margin: 8mm; }
+          body * { visibility: hidden; }
+          #area-relatorio, #area-relatorio * { visibility: visible; }
+          #area-relatorio { position: absolute; top: 0; left: 0; width: 100%; overflow: visible !important; }
+          #area-relatorio table { min-width: 0 !important; width: 100% !important; table-layout: auto; page-break-inside: auto; }
+          #area-relatorio tr { page-break-inside: avoid; }
+          #area-relatorio th { font-size: 8px !important; padding: 3px 4px !important; white-space: normal !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          #area-relatorio td { font-size: 8.5px !important; padding: 3px 4px !important; white-space: normal !important;
+            word-break: break-word; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          #area-relatorio h3 { font-size: 12px !important; }
+          #area-relatorio input[type="checkbox"] { width: 10px !important; height: 10px !important; }
+          .so-tela { display: none !important; }
+          .so-impressao { display: block !important; visibility: visible; }
+        }
+        .so-impressao { display: none; }
+        input:focus, select:focus, textarea:focus { border-color: ${CORES.laranja} !important; }
+      `}</style>
+
+      {/* Cabeçalho */}
+      <header style={{ background: CORES.azul, color: "#fff", padding: "0 22px", display: "flex", alignItems: "center", justifyContent: "space-between", height: 62, position: "sticky", top: 0, zIndex: 30, boxShadow: "0 2px 10px rgba(45,61,112,.25)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, cursor: "pointer" }} onClick={() => { setArea(null); setTela("MENU"); }}>
+          <div style={{ fontWeight: 800, fontSize: 17, letterSpacing: ".03em" }}>AURA <span style={{ color: CORES.laranja }}>360</span> <span style={{ opacity: .85, fontWeight: 700 }}>Planta</span></div>
+          <div style={{ fontSize: 12, opacity: 0.75, borderLeft: "1px solid rgba(255,255,255,.3)", paddingLeft: 14, display: window.innerWidth < 560 ? "none" : "block" }}>Portal integrado da Planta</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 13, opacity: 0.9 }}>{usuarioAtual.nome} · <em style={{ opacity: 0.8 }}>{usuarioAtual.perfil}</em></span>
+          <Botao tipo="laranja" style={{ padding: "6px 14px", fontSize: 13 }} onClick={() => { setArea("ADMIN"); setTela("CONFIG"); }}>⚙ Configurações</Botao>
+          <Botao tipo="contorno" style={{ padding: "6px 14px", fontSize: 13, background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }} onClick={sair}>Sair</Botao>
+        </div>
+      </header>
+
+      <main style={{ maxWidth: (typeof window !== "undefined" && window.innerWidth < 900) ? "100%" : "80vw", width: "100%", margin: "0 auto", padding: "26px 18px 60px", boxSizing: "border-box" }}>
+        {/* Home do portal — 3 áreas macro */}
+        {area === null && (
+          <PortalHome nome={usuarioAtual.nome} aoAbrir={(a) => { setArea(a); setTela("MENU"); }} />
+        )}
+
+        {/* Área 1 — Administrativo (app de compras e solicitações) */}
+        {area === "ADMIN" && (
+          <div>
+            <button onClick={() => { if (tela === "MENU") { setArea(null); } else { setTela("MENU"); } }} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>
+              ← {tela === "MENU" ? "Voltar ao início" : "Voltar ao Administrativo"}
+            </button>
+
+            {tela === "MENU" && (
+              <div>
+                <h1 style={{ color: CORES.azul, margin: "6px 0 4px", fontSize: 24 }}>🗂️ Administrativo</h1>
+                <p style={{ color: CORES.cinza, fontSize: 14, margin: "0 0 22px" }}>Requisições de materiais e compras, cadastro de itens e solicitação de serviços.</p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
+                  {MENU.map((m) => (
+                    <div key={m.id} onClick={() => setTela(m.id)} style={{
+                      background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 12, padding: "26px 20px", cursor: "pointer",
+                      transition: "transform .15s, box-shadow .15s", borderBottom: `3px solid ${CORES.laranja}`,
+                    }}
+                      onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "0 10px 24px rgba(45,61,112,.14)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}>
+                      <div style={{ fontSize: 30 }}>{m.icone}</div>
+                      <div style={{ fontWeight: 800, color: CORES.azul, marginTop: 10, fontSize: 16 }}>{m.rotulo}</div>
+                      <div style={{ fontSize: 13, color: CORES.cinza, marginTop: 6 }}>{m.desc}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
+            {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
+            {tela === "MATERIAIS" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+            {tela === "RELATORIOS" && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
+            {tela === "CONFIG" && <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+          </div>
+        )}
+
+        {/* Área 2 — Segurança (em desenvolvimento) */}
+        {area === "SEG" && <EmDesenvolvimento titulo="Segurança" icone="🦺" itens={["Inspeções", "Abordagens", "Ações", "EPIs"]} aoVoltar={() => { setArea(null); setTela("MENU"); }} />}
+
+        {/* Área 3 — Operação (em desenvolvimento) */}
+        {area === "OPER" && <EmDesenvolvimento titulo="Operação" icone="⚙️" itens={["Resumo Reagentes"]} aoVoltar={() => { setArea(null); setTela("MENU"); }} />}
+      </main>
+
+      <ModalEmails info={emails} aoFechar={() => setEmails(null)} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
