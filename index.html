@@ -82,6 +82,12 @@ const AMBIENTE = (function () {
   return "homolog";
 })();
 const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologação";
+
+/* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
+   Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
+   MINOR: novas funcionalidades; PATCH: correções pontuais. */
+const VERSAO_APP = "1.0.0";
+const VERSAO_DATA = "2026-08-19";
 // Armazenamento separado por ambiente (evita misturar dados de teste e oficiais)
 const STORAGE_KEY = "aura-solicitacoes-v1-" + AMBIENTE;
 const SESSION_KEY = "aura-sessao-v1-" + AMBIENTE;
@@ -1734,7 +1740,7 @@ function TelaConfig({ dados, setDados, usuario }) {
   return (
     <Cartao style={{ maxWidth: 1040, margin: "0 auto", position: "relative" }}>
       <div className="so-tela" style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
-        {[["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"]].map(([id, rot]) => (
+        {[["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"], ["sobre", "ℹ️ Sobre"]].map(([id, rot]) => (
           <button key={id} onClick={() => setAba(id)} style={{
             padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
             background: aba === id ? CORES.azul : CORES.cinzaClaro, color: aba === id ? "#fff" : CORES.azul,
@@ -1743,6 +1749,33 @@ function TelaConfig({ dados, setDados, usuario }) {
       </div>
 
       {aba === "registros" && <TelaAuditoria dados={dados} />}
+
+      {aba === "sobre" && (
+        <div style={{ maxWidth: 560 }}>
+          <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Sobre o sistema</h2>
+          <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 18px" }}>Controle de versão e identificação do ambiente em execução.</p>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <tbody>
+              {[
+                ["Aplicativo", "AURA 360 Planta"],
+                ["Versão", "v" + VERSAO_APP],
+                ["Data da versão", VERSAO_DATA],
+                ["Ambiente", AMBIENTE_ROTULO + (AMBIENTE === "teste" ? " 🧪" : " ✅")],
+              ].map(([k, v]) => (
+                <tr key={k}>
+                  <td style={{ ...td, fontWeight: 700, width: 160 }}>{k}</td>
+                  <td style={td}>{v}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p style={{ fontSize: 12, color: CORES.cinza, marginTop: 16, lineHeight: 1.6 }}>
+            Este sistema é mantido em <strong>dois ambientes independentes</strong>: <strong>Testes</strong> (dados fictícios,
+            para experimentação livre) e <strong>Homologação</strong> (ambiente oficial). Os dados de um ambiente nunca
+            aparecem no outro. Consulte o histórico de versões (CHANGELOG) com o administrador do repositório.
+          </p>
+        </div>
+      )}
 
       {aba === "usuarios" && (
       <div>
@@ -2203,6 +2236,13 @@ const Mascote = ({ tamanho = 120, style }) => (
     style={{ objectFit: "contain", display: "block", ...style }} />
 );
 
+/* Rodapé com número de versão + ambiente — visível em toda a aplicação */
+const RodapeVersao = ({ style }) => (
+  <div style={{ textAlign: "center", fontSize: 11, color: CORES.cinza, padding: "10px 0", ...style }}>
+    AURA 360 Planta · v{VERSAO_APP} ({VERSAO_DATA}) · {AMBIENTE_ROTULO}
+  </div>
+);
+
 /* Faixa fixa indicando o ambiente de TESTES (não aparece em Homologação) */
 const FaixaAmbiente = () => AMBIENTE !== "teste" ? null : (
   <div style={{ background: CORES.laranja, color: "#fff", textAlign: "center", fontSize: 12.5, fontWeight: 700, padding: "5px 12px", letterSpacing: ".02em" }}>
@@ -2259,7 +2299,7 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: CORES.cinzaClaro, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: CORES.cinzaClaro, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
       <div style={{ background: "#fff", borderRadius: 14, padding: 40, width: "min(420px, 92%)", borderTop: `5px solid ${CORES.laranja}`, boxShadow: "0 12px 40px rgba(45,61,112,.12)" }}>
         <div style={{ textAlign: "center", marginBottom: 24 }}>
           <div style={{ fontSize: 26, fontWeight: 800, color: CORES.azul, letterSpacing: ".02em" }}>AURA <span style={{ color: CORES.laranja }}>360</span> Planta</div>
@@ -2334,6 +2374,7 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
           </div>
         )}
       </div>
+      <RodapeVersao style={{ marginTop: 4 }} />
     </div>
   );
 }
@@ -2702,6 +2743,7 @@ function App() {
         {area === "OPER" && <EmDesenvolvimento titulo="Operação" icone="⚙️" itens={["Resumo Reagentes"]} aoVoltar={() => { setArea(null); setTela("MENU"); }} />}
       </main>
 
+      <RodapeVersao />
       <ModalEmails info={emails} aoFechar={() => setEmails(null)} />
     </div>
   );
