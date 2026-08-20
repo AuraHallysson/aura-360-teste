@@ -1371,14 +1371,14 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
                 {/* RC: preenchida no ato da conclusão */}
                 <td style={{ ...td, whiteSpace: "nowrap", fontWeight: 600 }}>{r.rc || "—"}</td>
                 {/* OC: informada depois, quando existir; editável só por admin em itens concluídos */}
-                <td style={{ ...td, width: 110 }}>
+                <td style={{ ...td, width: 130, minWidth: 130 }}>
                   {admin && r.concluido ? (
-                    <span>
-                      <input className="so-tela" style={{ ...inputStyle, padding: "4px 8px", fontSize: 13 }} defaultValue={r.oc || ""} placeholder="nº OC"
+                    <div style={{ minWidth: 110 }}>
+                      <input className="so-tela" style={{ ...inputStyle, width: "100%", boxSizing: "border-box", padding: "4px 8px", fontSize: 13 }} defaultValue={r.oc || ""} placeholder="nº OC"
                         key={r.id + (r.oc || "")} onBlur={(e) => salvarOC(r, e.target.value)}
                         onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} title="Informe o nº da OC quando disponível" />
                       <span className="so-impressao" style={{ fontWeight: 600 }}>{r.oc || "—"}</span>
-                    </span>
+                    </div>
                   ) : (r.oc || "—")}
                 </td>
                 {/* Cancelar: exige justificativa */}
