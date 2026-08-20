@@ -427,6 +427,17 @@ function CampoBuscaMaterial({ valor, aoMudar, aoEscolher, materiais, campo, plac
    ============================================================ */
 const statusDe = (c) => (c.concluido ? "Concluído" : c.cancelado ? "Cancelado" : "Pendente");
 
+// Status detalhado da Solicitação de Compras, exibido ao solicitante. RC e OC vêm
+// automaticamente do que o Administrador preencheu no Relatório.
+// Sequência: "Aguardando criação da RC" → "RC x" → "OC x" → "Item aguardando retirada" → "Item Recebido"
+const rotuloStatusCompra = (c) => {
+  if (c.recebido) return "Item Recebido";
+  if (c.entregue) return "Item aguardando retirada";
+  if (c.oc) return `OC ${c.oc}`;
+  if (c.concluido && c.rc) return `RC ${c.rc}`;
+  return "Aguardando criação da RC";
+};
+
 const linhaVazia = () => ({ codigo: "", descricao: "", quantidade: "", unidade: "", centroCusto: "", contaContabil: "", capex: false, nomeCapex: "", observacoes: "" });
 
 function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
@@ -512,6 +523,15 @@ function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
     avisar("Solicitação removida.");
     let nd = { ...dados, compras: dados.compras.filter((c) => c.id !== id) };
     nd = comLog(nd, usuario, "Compra", "Removeu solicitação de compra", alvo ? `${alvo.codigo || ""} — ${alvo.descricao || ""}` : "", id);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  // O solicitante confirma o recebimento após o Administrador marcar "Entregue" no Relatório.
+  // Uma vez confirmado, só um Administrador pode desmarcar (feito na tela de Relatórios).
+  const confirmarRecebimento = async (c) => {
+    if (!c.entregue || c.recebido) return;
+    let nd = { ...dados, compras: dados.compras.map((x) => (x.id === c.id ? { ...x, recebido: true, recebidoEm: agoraStr(), recebidoPor: usuario.nome } : x)) };
+    nd = comLog(nd, usuario, "Movimentação", "Confirmou recebimento do item", `${c.codigo || ""} — ${c.descricao || ""}`, c.id);
     setDados(nd); await salvarDados(nd);
   };
 
@@ -611,13 +631,30 @@ function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
         {minhas.length === 0 ? <p style={{ color: CORES.cinza, fontSize: 14 }}>Nenhuma solicitação encontrada. Ajuste os filtros ou envie uma nova pela tabela acima.</p> : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13.5, color: CORES.azul }}>
-              <thead><tr>{["Data/Hora", "Cód.", "Descrição", "Qtd.", "Un.", "C. Custo", "Conta", "Capex", "Forn. Esp.", "Obs.", "Status", "Ações"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <thead><tr>{["Data/Hora", "Cód.", "Descrição", "Qtd.", "Un.", "C. Custo", "Conta", "Capex", "Forn. Esp.", "Obs.", "Status", "Item Recebido", "Ações"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
               <tbody>
                 {minhas.map((c) => (
-                  <tr key={c.id} style={{ opacity: c.concluido || c.cancelado ? 0.6 : 1 }}>
+                  <tr key={c.id} style={{ opacity: c.recebido || c.cancelado ? 0.6 : 1 }}>
                     <td style={td}>{c.dataHora}</td><td style={td}>{c.codigo}</td><td style={td}>{c.descricao}</td>
                     <td style={td}>{c.quantidade}</td><td style={td}>{c.unidade}</td><td style={td}>{c.centroCusto}</td><td style={td}>{c.contaContabil}</td><td style={td}>{c.capex ? (c.nomeCapex || "Sim") : "—"}</td><td style={{ ...td, maxWidth: 120 }} title={c.fornecedorEspecifico || ""}>{c.fornecedorEspecifico || "—"}</td><td style={{ ...td, maxWidth: 160 }} title={c.observacoes || ""}>{c.observacoes ? (c.observacoes.length > 34 ? c.observacoes.slice(0, 32) + "…" : c.observacoes) : "—"}</td>
-                    <td style={td}>{c.concluido ? <span style={{ color: "seagreen", fontWeight: 700 }} title={c.rc ? "RC: " + c.rc : ""}>Concluído 🔒{c.rc ? " · RC " + c.rc : ""}{c.comentarioAdmin && <div style={{ fontSize: 11.5, fontWeight: 400, color: CORES.azul, fontStyle: "italic", maxWidth: 220 }}>💬 {c.comentarioAdmin}</div>}</span> : c.cancelado ? <span style={{ color: CORES.laranja, fontWeight: 700 }}>Cancelado 🔒<div style={{ fontSize: 11.5, fontWeight: 400, color: CORES.cinza, fontStyle: "italic", maxWidth: 220 }}>Motivo: {c.justificativa || "não informado"}</div></span> : <span style={{ color: CORES.laranja }}>Pendente</span>}</td>
+                    <td style={td}>
+                      {c.cancelado ? (
+                        <span style={{ color: CORES.laranja, fontWeight: 700 }}>Cancelado 🔒<div style={{ fontSize: 11.5, fontWeight: 400, color: CORES.cinza, fontStyle: "italic", maxWidth: 220 }}>Motivo: {c.justificativa || "não informado"}</div></span>
+                      ) : (
+                        <span style={{ color: c.recebido ? "seagreen" : c.entregue ? CORES.laranja : c.concluido ? CORES.azul : CORES.laranja, fontWeight: 700 }}>
+                          {rotuloStatusCompra(c)}{c.concluido ? " 🔒" : ""}
+                          {c.comentarioAdmin && <div style={{ fontSize: 11.5, fontWeight: 400, color: CORES.azul, fontStyle: "italic", maxWidth: 220 }}>💬 {c.comentarioAdmin}</div>}
+                          {c.entregue && <div style={{ fontSize: 11, fontWeight: 400, color: CORES.cinza }}>Entregue em {c.entregueEm}</div>}
+                          {c.recebido && <div style={{ fontSize: 11, fontWeight: 400, color: CORES.cinza }}>Recebido em {c.recebidoEm}</div>}
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ ...td, textAlign: "center" }}>
+                      <input type="checkbox" checked={!!c.recebido} disabled={!c.entregue || c.recebido}
+                        onChange={() => confirmarRecebimento(c)}
+                        title={c.recebido ? `Recebido em ${c.recebidoEm}` : c.entregue ? "Confirmar recebimento do item" : "Aguardando o item ser entregue pelo administrador"}
+                        style={{ width: 17, height: 17, accentColor: CORES.laranja, cursor: (!c.entregue || c.recebido) ? "not-allowed" : "pointer" }} />
+                    </td>
                     <td style={{ ...td, whiteSpace: "nowrap" }}>
                       <Botao tipo="contorno" disabled={c.concluido || c.cancelado} style={{ padding: "4px 10px", fontSize: 12, marginRight: 6 }} onClick={() => setEditando({ ...c })} title={c.concluido ? "Item concluído: bloqueado" : c.cancelado ? "Item cancelado: bloqueado" : "Editar"}>Editar</Botao>
                       <Botao tipo="perigo" disabled={c.concluido || c.cancelado} style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => removerItem(c.id)} title={c.concluido ? "Item concluído: bloqueado" : c.cancelado ? "Item cancelado: bloqueado" : "Remover"}>Remover</Botao>
@@ -1227,6 +1264,30 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
       { categoria: "Movimentação", acao: "Atualizou nº da OC", detalhe: `${r.codigo || r.descricao || ""} | OC: ${valor.trim() || "(vazio)"}` });
   };
 
+  // Entregue: o Administrador marca quando o item chega à unidade (exige nº da OC já preenchido).
+  // Desmarcar também desfaz a confirmação de recebimento (dependência lógica) e o solicitante
+  // precisará confirmar novamente quando o item for reentregue.
+  const alternarEntregue = (r) => {
+    if (!admin || r.cancelado || !r.concluido) return;
+    if (!r.entregue) {
+      if (!(r.oc || "").trim()) { avisar("Informe o nº da OC antes de marcar como Entregue."); return; }
+      atualizarRegistro(r.id, { entregue: true, entregueEm: agoraStr(), entreguePor: usuario.nome },
+        { categoria: "Movimentação", acao: "Marcou item como Entregue", detalhe: `${r.codigo || r.descricao || ""} | OC: ${r.oc}` });
+      notificarEtapa(r, "Item aguardando retirada", `OC: ${r.oc}`, usuario.nome);
+    } else {
+      atualizarRegistro(r.id, { entregue: false, entregueEm: "", entreguePor: "", recebido: false, recebidoEm: "", recebidoPor: "" },
+        { categoria: "Movimentação", acao: "Desmarcou item como Entregue", detalhe: `${r.codigo || r.descricao || ""}` });
+    }
+  };
+
+  // Item Recebido: confirmado pelo solicitante em "Solicitação de Compras".
+  // Aqui o Administrador só pode DESMARCAR (nunca marcar em nome do solicitante).
+  const desmarcarRecebido = (r) => {
+    if (!admin || !r.recebido) return;
+    atualizarRegistro(r.id, { recebido: false, recebidoEm: "", recebidoPor: "" },
+      { categoria: "Movimentação", acao: "Desmarcou 'Item Recebido' (administrador)", detalhe: `${r.codigo || r.descricao || ""}` });
+  };
+
   const colunas = modo === "Compra"
     ? [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["codigo", "Cód."], ["descricao", "Descrição"], ["quantidade", "Qtd."], ["unidade", "Un."], ["centroCusto", "C. Custo"], ["contaContabil", "Conta"], ["nomeCapex", "Capex"], ["fornecedorEspecifico", "Forn. Específico"], ["observacoes", "Observações"]]
     : [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["tipo", "Tipo"], ["fornecedor", "Fornecedor"], ["partNumber", "Part Number"]];
@@ -1251,6 +1312,13 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
         o["Concluído em"] = r.concluidoEm || "";
         o["Concluído por"] = r.concluidoPor || "";
         o["Comentário Admin"] = r.comentarioAdmin || "";
+        o["Entregue"] = r.entregue ? "Sim" : "Não";
+        o["Entregue em"] = r.entregueEm || "";
+        o["Entregue por"] = r.entreguePor || "";
+        o["Item Recebido"] = r.recebido ? "Sim" : "Não";
+        o["Recebido em"] = r.recebidoEm || "";
+        o["Recebido por"] = r.recebidoPor || "";
+        o["Status"] = r.cancelado ? "Cancelado" : rotuloStatusCompra(r);
         o["Cancelado"] = r.cancelado ? "Sim" : "Não";
         o["Justificativa"] = r.justificativa || "";
         o["Cancelado em"] = r.canceladoEm || "";
@@ -1340,14 +1408,18 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
             <th style={{ ...th, background: CORES.laranja }}>Concluído</th>
             <th style={{ ...th, background: CORES.laranja }}>RC</th>
             <th style={{ ...th, background: CORES.laranja }}>OC</th>
+            <th style={{ ...th, background: CORES.laranja }}>Entregue</th>
+            <th style={{ ...th, background: CORES.laranja }}>Item Recebido</th>
             <th style={{ ...th, background: CORES.laranja }}>Cancelar</th>
             <th style={th}>Concluído em</th>
+            <th style={th}>Entregue em</th>
+            <th style={th}>Recebido em</th>
             <th style={th}>Cancelado em</th>
             <th style={th}>Registro (Admin)</th>
           </tr></thead>
           <tbody>
             {registros.length === 0 ? (
-              <tr><td style={{ ...td, textAlign: "center", padding: 24, color: CORES.cinza }} colSpan={colunas.length + 7}>Nenhum registro encontrado com os filtros atuais.</td></tr>
+              <tr><td style={{ ...td, textAlign: "center", padding: 24, color: CORES.cinza }} colSpan={colunas.length + 11}>Nenhum registro encontrado com os filtros atuais.</td></tr>
             ) : registros.map((r) => (
               <tr key={r.id} style={{ background: r.concluido ? "rgba(46,139,87,.06)" : r.cancelado ? "rgba(244,97,77,.07)" : "transparent" }}>
                 {colunas.map(([k]) => (
@@ -1381,20 +1453,34 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
                     </div>
                   ) : (r.oc || "—")}
                 </td>
+                {/* Entregue: exige nº da OC preenchido; desmarcar também desfaz o Recebido */}
+                <td style={{ ...td, textAlign: "center" }}>
+                  {check(r.entregue, !admin || r.cancelado || !r.concluido, () => alternarEntregue(r),
+                    !admin ? "Somente administradores" : r.cancelado ? "Item cancelado" : !r.concluido ? "Conclua a solicitação (RC) primeiro" : r.entregue ? "Desmarcar Entregue (também desfaz o Item Recebido)" : "Marcar como Entregue (exige nº da OC)")}
+                </td>
+                {/* Item Recebido: confirmado pelo solicitante em Solicitação de Compras; aqui o admin só pode desmarcar */}
+                <td style={{ ...td, textAlign: "center" }}>
+                  {check(r.recebido, !admin || !r.recebido, () => desmarcarRecebido(r),
+                    !admin ? "Somente administradores" : !r.recebido ? "Aguardando confirmação do solicitante" : "Desmarcar Item Recebido (somente administrador)")}
+                </td>
                 {/* Cancelar: exige justificativa */}
                 <td style={{ ...td, textAlign: "center" }}>
                   {check(r.cancelado, !admin || r.concluido, () => alternarCancelado(r),
                     !admin ? "Somente administradores" : r.concluido ? "Item concluído" : "Cancelar (exige justificativa)")}
                 </td>
                 <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12.5 }}>{r.concluidoEm || "—"}</td>
+                <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12.5 }}>{r.entregueEm || "—"}</td>
+                <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12.5 }}>{r.recebidoEm || "—"}</td>
                 <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12.5 }}>{r.canceladoEm || "—"}</td>
-                {/* Trilha: qual admin concluiu / cancelou */}
+                {/* Trilha: qual admin concluiu / entregou / cancelou, e quem confirmou o recebimento */}
                 <td style={{ ...td, fontSize: 12.5 }}>
                   {r.concluido && r.concluidoPor && (
                     <div style={{ color: "seagreen" }}>✓ Concluído por {r.concluidoPor}
                       {r.comentarioAdmin && <div style={{ color: CORES.azul, fontStyle: "italic", fontWeight: 400 }} title={r.comentarioAdmin}>💬 “{r.comentarioAdmin.length > 70 ? r.comentarioAdmin.slice(0, 68) + "…" : r.comentarioAdmin}”</div>}
                     </div>
                   )}
+                  {r.entregue && r.entreguePor && <div style={{ color: CORES.azul }}>📦 Entregue por {r.entreguePor}</div>}
+                  {r.recebido && <div style={{ color: "seagreen" }}>✓ Recebido{r.recebidoPor ? " por " + r.recebidoPor : ""}</div>}
                   {r.cancelado && r.canceladoPor && (
                     <div style={{ color: CORES.laranja }} title={r.justificativa}>✕ Cancelado por {r.canceladoPor}<br />
                       <span style={{ color: CORES.cinza, fontStyle: "italic" }}>“{(r.justificativa || "").slice(0, 60)}{(r.justificativa || "").length > 60 ? "…" : ""}”</span>
@@ -1482,7 +1568,7 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
         </div>
         )}
       </div>
-      {!admin && <p style={{ fontSize: 12, color: CORES.cinza, marginTop: 10 }}>As colunas Concluído, RC, OC e Cancelar só podem ser alteradas por administradores. Itens concluídos ou cancelados ficam bloqueados para edição e remoção.</p>}
+      {!admin && <p style={{ fontSize: 12, color: CORES.cinza, marginTop: 10 }}>As colunas Concluído, RC, OC, Entregue, Item Recebido e Cancelar só podem ser alteradas por administradores. Itens concluídos ou cancelados ficam bloqueados para edição e remoção. O solicitante confirma o recebimento na tela de Solicitação de Compras.</p>}
 
       {/* Modal de RC (conclusão) ou Justificativa (cancelamento) */}
       {modal && (
