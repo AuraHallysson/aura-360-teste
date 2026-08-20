@@ -64,9 +64,11 @@ const { useState, useEffect, useMemo, useRef } = React;
 
 const CORES = {
   azul: "rgb(45,61,112)",
+  azulEscuro: "rgb(34,48,92)", // gradiente da sidebar — mesmo padrão do app de POPs (--azul-d)
   laranja: "rgb(244,97,77)",
   cinza: "rgb(176,183,193)",
   cinzaClaro: "rgb(243,245,250)",
+  cinzaAzul: "rgb(216,225,237)", // --cinza-azul do app de POPs
   branco: "#ffffff",
 };
 
@@ -2341,6 +2343,74 @@ const FaixaAmbiente = () => AMBIENTE !== "teste" ? null : (
   </div>
 );
 
+/* ============================================================
+   Navegação do Administrativo — padrão visual do app de POPs
+   (sidebar em gradiente azul, item ativo com borda laranja à esquerda)
+   ============================================================ */
+const ItemNav = ({ ativo, icone, rotulo, onClick }) => {
+  const [hover, setHover] = useState(false);
+  return (
+    <button type="button" onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", border: "none",
+        borderLeft: `3px solid ${ativo ? CORES.laranja : "transparent"}`, padding: "11px 16px", cursor: "pointer",
+        background: ativo ? "rgba(255,255,255,.14)" : hover ? "rgba(255,255,255,.08)" : "transparent",
+        color: "#fff", fontWeight: ativo ? 700 : 400, fontSize: 14, fontFamily: "inherit",
+      }}>
+      <span style={{ width: 20, textAlign: "center", flexShrink: 0 }}>{icone}</span>
+      {rotulo}
+    </button>
+  );
+};
+
+function SidebarAdministrativo({ itens, telaAtual, aoNavegar, aoVoltarPortal }) {
+  return (
+    <aside className="so-tela" style={{
+      background: `linear-gradient(180deg, ${CORES.azul}, ${CORES.azulEscuro})`, borderRadius: 14, overflow: "hidden",
+      display: "flex", flexDirection: "column", alignSelf: "start", boxShadow: "0 8px 22px rgba(45,61,112,.18)",
+    }}>
+      <div style={{ padding: "16px 16px 12px", borderBottom: "1px solid rgba(255,255,255,.14)" }}>
+        <button type="button" onClick={aoVoltarPortal} style={{ border: "none", background: "none", color: "rgba(255,255,255,.75)", fontSize: 12, cursor: "pointer", padding: 0, fontFamily: "inherit", marginBottom: 8, display: "block" }}>
+          ← Portal AURA 360
+        </button>
+        <div style={{ color: "#fff", fontWeight: 800, fontSize: 15 }}>🗂️ Administrativo</div>
+      </div>
+      <nav style={{ flex: 1, padding: "8px 0" }}>
+        {itens.map((it) => <ItemNav key={it.id} ativo={telaAtual === it.id} icone={it.icone} rotulo={it.rotulo} onClick={() => aoNavegar(it.id)} />)}
+      </nav>
+    </aside>
+  );
+}
+
+/* Dropdown "Administrativo" na barra azul do topo — acesso direto de qualquer área do portal */
+function MenuAdminTopo({ itens, aberto, aoAbrirFechar, aoNavegar, innerRef }) {
+  return (
+    <div ref={innerRef} style={{ position: "relative" }}>
+      <Botao tipo="laranja" style={{ padding: "6px 14px", fontSize: 13 }} onClick={aoAbrirFechar}>🗂️ Administrativo ▾</Botao>
+      {aberto && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 8px)", right: 0, background: "#fff", borderRadius: 10,
+          boxShadow: "0 14px 34px rgba(45,61,112,.28)", minWidth: 240, overflow: "hidden", zIndex: 40,
+          border: `1px solid ${CORES.cinza}`,
+        }}>
+          {itens.map((it) => (
+            <button key={it.id} type="button" onClick={() => aoNavegar(it.id)} style={{
+              display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", border: "none",
+              borderBottom: `1px solid ${CORES.cinzaClaro}`, padding: "10px 14px", cursor: "pointer",
+              background: "#fff", color: CORES.azul, fontSize: 13.5, fontFamily: "inherit",
+            }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = CORES.cinzaAzul)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "#fff")}>
+              <span style={{ width: 18, textAlign: "center", flexShrink: 0 }}>{it.icone}</span>
+              {it.rotulo}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroAdmin }) {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
@@ -2546,6 +2616,16 @@ function App() {
   const [area, setArea] = useState(null); // null = Home do portal | "ADMIN" | "SEG" | "OPER"
   const [tela, setTela] = useState("MENU"); // navegação dentro da área Administrativo
   const [emails, setEmails] = useState(null);
+  const [menuAdminAberto, setMenuAdminAberto] = useState(false); // dropdown "Administrativo" na barra do topo
+  const menuAdminRef = useRef(null);
+
+  // Fecha o dropdown "Administrativo" ao clicar fora dele
+  useEffect(() => {
+    if (!menuAdminAberto) return;
+    const aoClicarFora = (e) => { if (menuAdminRef.current && !menuAdminRef.current.contains(e.target)) setMenuAdminAberto(false); };
+    document.addEventListener("mousedown", aoClicarFora);
+    return () => document.removeEventListener("mousedown", aoClicarFora);
+  }, [menuAdminAberto]);
 
   useEffect(() => {
     (async () => {
@@ -2733,6 +2813,11 @@ function App() {
     { id: "MATERIAIS", rotulo: "Atualização de Materiais", icone: "⟳", desc: "Sincronize a base MateriaisDeCompra.csv" },
     { id: "RELATORIOS", rotulo: "Relatórios de Compras / Cadastros", icone: "📊", desc: "Consulte, filtre, conclua e exporte" },
   ];
+  // Navegação do Administrativo (sidebar + dropdown do topo); Configurações só para administradores
+  const itensAdmin = usuarioAtual.perfil === "Administrador"
+    ? [...MENU, { id: "CONFIG", rotulo: "Configurações", icone: "⚙️", desc: "Usuários, auditoria e versão" }]
+    : MENU;
+  const irParaAdmin = (id) => { setArea("ADMIN"); setTela(id); setMenuAdminAberto(false); };
 
   return (
     <div style={{ minHeight: "100vh", background: CORES.cinzaClaro, fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
@@ -2766,7 +2851,7 @@ function App() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 13, opacity: 0.9 }}>{usuarioAtual.nome} · <em style={{ opacity: 0.8 }}>{usuarioAtual.perfil}</em></span>
-          <Botao tipo="laranja" style={{ padding: "6px 14px", fontSize: 13 }} onClick={() => { setArea("ADMIN"); setTela("CONFIG"); }}>⚙ Configurações</Botao>
+          <MenuAdminTopo itens={itensAdmin} aberto={menuAdminAberto} aoAbrirFechar={() => setMenuAdminAberto((v) => !v)} aoNavegar={irParaAdmin} innerRef={menuAdminRef} />
           <Botao tipo="contorno" style={{ padding: "6px 14px", fontSize: 13, background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }} onClick={sair}>Sair</Botao>
         </div>
       </header>
@@ -2777,39 +2862,19 @@ function App() {
           <PortalHome nome={usuarioAtual.nome} aoAbrir={(a) => { setArea(a); setTela("MENU"); }} />
         )}
 
-        {/* Área 1 — Administrativo (app de compras e solicitações) */}
+        {/* Área 1 — Administrativo (app de compras e solicitações) — navegação em sidebar, padrão do app de POPs */}
         {area === "ADMIN" && (
-          <div>
-            <button onClick={() => { if (tela === "MENU") { setArea(null); } else { setTela("MENU"); } }} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>
-              ← {tela === "MENU" ? "Voltar ao início" : "Voltar ao Administrativo"}
-            </button>
+          <div style={{ display: "grid", gridTemplateColumns: (typeof window !== "undefined" && window.innerWidth < 800) ? "1fr" : "232px 1fr", gap: 20, alignItems: "start" }}>
+            <SidebarAdministrativo itens={itensAdmin} telaAtual={tela === "MENU" ? "COMPRAS" : tela} aoNavegar={(id) => setTela(id)} aoVoltarPortal={() => { setArea(null); setTela("MENU"); }} />
 
-            {tela === "MENU" && (
-              <div>
-                <h1 style={{ color: CORES.azul, margin: "6px 0 4px", fontSize: 24 }}>🗂️ Administrativo</h1>
-                <p style={{ color: CORES.cinza, fontSize: 14, margin: "0 0 22px" }}>Requisições de materiais e compras, cadastro de itens e solicitação de serviços.</p>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
-                  {MENU.map((m) => (
-                    <div key={m.id} onClick={() => setTela(m.id)} style={{
-                      background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 12, padding: "26px 20px", cursor: "pointer",
-                      transition: "transform .15s, box-shadow .15s", borderBottom: `3px solid ${CORES.laranja}`,
-                    }}
-                      onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "0 10px 24px rgba(45,61,112,.14)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}>
-                      <div style={{ fontSize: 30 }}>{m.icone}</div>
-                      <div style={{ fontWeight: 800, color: CORES.azul, marginTop: 10, fontSize: 16 }}>{m.rotulo}</div>
-                      <div style={{ fontSize: 13, color: CORES.cinza, marginTop: 6 }}>{m.desc}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
-            {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
-            {tela === "MATERIAIS" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuarioAtual} />}
-            {tela === "RELATORIOS" && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
-            {tela === "CONFIG" && <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+            <div style={{ minWidth: 0 }}>
+              {tela === "MENU" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
+              {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
+              {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
+              {tela === "MATERIAIS" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+              {tela === "RELATORIOS" && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
+              {tela === "CONFIG" && <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+            </div>
           </div>
         )}
 
