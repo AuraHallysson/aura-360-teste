@@ -2998,6 +2998,10 @@ function App() {
   // AURA 360° Planta como um todo (usuários, permissões, auditoria) — fica num nível global,
   // não dentro de um Subsistema específico.
   const itensAdmin = MENU_VISIVEL;
+  // Telas que devem ocupar a tela toda (sem a faixa de 80vw central, com apenas uma margem fina):
+  // o sistema de Compras e Cadastros e qualquer subsistema externo já aberto embutido — ambos têm
+  // navegação própria (sidebar ou app completo) e ganham mais espaço útil sem a moldura do portal.
+  const telaCheia = (area === "ADMIN" && appAdmin === "COMPRAS") || !!sistemaEmbutido;
   // Subsistemas externos (apps próprios): quando modoAbertura="embutido", rodam dentro da própria tela do
   // AURA 360° via iframe (sem aba/janela extra); senão, abrem em nova aba. Atalho temporário até existir SSO real.
   const abrirSistemaExterno = (sistema) => {
@@ -3068,7 +3072,7 @@ function App() {
 
       <TrilhaNavegacao segmentos={trilha} />
 
-      <main style={{ maxWidth: (typeof window !== "undefined" && window.innerWidth < 900) ? "100%" : "80vw", width: "100%", margin: "0 auto", padding: "26px 18px 60px", boxSizing: "border-box" }}>
+      <main style={telaCheia ? { width: "100%", padding: "max(10px, 1vw)", boxSizing: "border-box" } : { maxWidth: (typeof window !== "undefined" && window.innerWidth < 900) ? "100%" : "80vw", width: "100%", margin: "0 auto", padding: "26px 18px 60px", boxSizing: "border-box" }}>
         {/* Home do portal — 3 áreas macro */}
         {area === null && (
           <PortalHome nome={usuarioAtual.nome} aoAbrir={(a) => { setArea(a); setTela("MENU"); setAppAdmin(null); }} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
@@ -3091,15 +3095,12 @@ function App() {
           </div>
         )}
 
-        {/* Área 2 — Segurança: segundo menu, ou o sistema externo já aberto embutido (iframe) na própria tela */}
+        {/* Área 2 — Segurança: segundo menu, ou o sistema externo já aberto embutido (iframe) em tela cheia.
+            Sem card/borda arredondada, sem botão de volta — a navegação de volta fica só na trilha
+            (breadcrumb) do topo. A ideia é que o subsistema pareça um app completo, não uma caixa embutida. */}
         {area === "SEG" && sistemaEmbutido && (
-          <div>
-            <button type="button" onClick={() => setSistemaEmbutido(null)} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>
-              ← Segurança
-            </button>
-            <iframe src={sistemaEmbutido.url} title={sistemaEmbutido.titulo}
-              style={{ width: "100%", height: "calc(100vh - 230px)", minHeight: 480, border: `1px solid ${CORES.cinza}`, borderRadius: 10, background: "#fff", display: "block" }} />
-          </div>
+          <iframe src={sistemaEmbutido.url} title={sistemaEmbutido.titulo}
+            style={{ width: "100%", height: "calc(100vh - 100px)", border: "none", display: "block" }} />
         )}
         {area === "SEG" && !sistemaEmbutido && (
           <SegundoMenuGrupo grupoId="SEG" aoEscolher={abrirSistemaExterno} aoVoltarPortal={irParaHome} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
