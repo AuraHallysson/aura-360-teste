@@ -17,8 +17,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-<!-- MSAL: biblioteca oficial da Microsoft para autenticacao Entra ID -->
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<!-- MSAL: biblioteca oficial da Microsoft para autenticacao Entra ID.
+     CDN oficial da Microsoft (alcdn.msauth.net) estava fora do ar (404) nesta versao; usando jsDelivr
+     como espelho do pacote npm oficial @azure/msal-browser. -->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/lib/msal-browser.min.js"></script>
 <style>html,body{margin:0;padding:0;background:rgb(243,245,250);}</style>
 </head>
 <body>
