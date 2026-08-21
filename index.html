@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>AURA 360 Planta — Aura Minerals</title>
+<title>AURA 360° Planta — Aura Minerals</title>
 <!-- PWA: app instalável (Adicionar à tela inicial / Instalar) -->
 <link rel="manifest" href="./manifest.webmanifest" />
 <meta name="theme-color" content="#2d3d70" />
@@ -1724,7 +1724,7 @@ function TelaAuditoria({ dados }) {
   );
 }
 
-function TelaConfig({ dados, setDados, usuario }) {
+function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
   if (usuario.perfil !== "Administrador") {
     return (
       <Cartao style={{ maxWidth: 520, margin: "0 auto", textAlign: "center", padding: 36 }}>
@@ -1735,7 +1735,6 @@ function TelaConfig({ dados, setDados, usuario }) {
     );
   }
 
-  const [aba, setAba] = useState("usuarios"); // "usuarios" | "registros"
   const [novo, setNovo] = useState({ nome: "", email: "", perfil: "Usuário Comum" });
   const [resetEmail, setResetEmail] = useState(null);
   const [novaSenha, setNovaSenha] = useState("");
@@ -1833,7 +1832,7 @@ function TelaConfig({ dados, setDados, usuario }) {
   return (
     <Cartao style={{ maxWidth: 1040, margin: "0 auto", position: "relative" }}>
       <div className="so-tela" style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
-        {[["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"], ["sobre", "ℹ️ Sobre"]].map(([id, rot]) => (
+        {[["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"], ["materiais", "🔄 Materiais"], ["sobre", "ℹ️ Sobre"]].map(([id, rot]) => (
           <button key={id} onClick={() => setAba(id)} style={{
             padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
             background: aba === id ? CORES.azul : CORES.cinzaClaro, color: aba === id ? "#fff" : CORES.azul,
@@ -1843,6 +1842,8 @@ function TelaConfig({ dados, setDados, usuario }) {
 
       {aba === "registros" && <TelaAuditoria dados={dados} />}
 
+      {aba === "materiais" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuario} />}
+
       {aba === "sobre" && (
         <div style={{ maxWidth: 560 }}>
           <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Sobre o sistema</h2>
@@ -1850,7 +1851,7 @@ function TelaConfig({ dados, setDados, usuario }) {
           <table style={{ borderCollapse: "collapse", width: "100%" }}>
             <tbody>
               {[
-                ["Aplicativo", "AURA 360 Planta"],
+                ["Aplicativo", "AURA 360° Planta"],
                 ["Versão", "v" + VERSAO_APP],
                 ["Data da versão", formatarDataBR(VERSAO_DATA)],
                 ["Ambiente", AMBIENTE_ROTULO + (AMBIENTE === "teste" ? " 🧪" : " ✅")],
@@ -2332,7 +2333,7 @@ const Mascote = ({ tamanho = 120, style }) => (
 /* Rodapé com número de versão + ambiente — visível em toda a aplicação */
 const RodapeVersao = ({ style }) => (
   <div style={{ textAlign: "center", fontSize: 11, color: CORES.cinza, padding: "10px 0", ...style }}>
-    AURA 360 Planta · v{VERSAO_APP} ({formatarDataBR(VERSAO_DATA)}) · {AMBIENTE_ROTULO}
+    AURA 360° Planta · v{VERSAO_APP} ({formatarDataBR(VERSAO_DATA)}) · {AMBIENTE_ROTULO}
   </div>
 );
 
@@ -2371,9 +2372,9 @@ function SidebarAdministrativo({ itens, telaAtual, aoNavegar, aoVoltarPortal }) 
     }}>
       <div style={{ padding: "16px 16px 12px", borderBottom: "1px solid rgba(255,255,255,.14)" }}>
         <button type="button" onClick={aoVoltarPortal} style={{ border: "none", background: "none", color: "rgba(255,255,255,.75)", fontSize: 12, cursor: "pointer", padding: 0, fontFamily: "inherit", marginBottom: 8, display: "block" }}>
-          ← Portal AURA 360
+          ← Administrativo
         </button>
-        <div style={{ color: "#fff", fontWeight: 800, fontSize: 15 }}>🗂️ Administrativo</div>
+        <div style={{ color: "#fff", fontWeight: 800, fontSize: 15 }}>🛒 Compra</div>
       </div>
       <nav style={{ flex: 1, padding: "8px 0" }}>
         {itens.map((it) => <ItemNav key={it.id} ativo={telaAtual === it.id} icone={it.icone} rotulo={it.rotulo} onClick={() => aoNavegar(it.id)} />)}
@@ -2382,31 +2383,28 @@ function SidebarAdministrativo({ itens, telaAtual, aoNavegar, aoVoltarPortal }) 
   );
 }
 
-/* Dropdown "Administrativo" na barra azul do topo — acesso direto de qualquer área do portal */
-function MenuAdminTopo({ itens, aberto, aoAbrirFechar, aoNavegar, innerRef }) {
+/* Trilha de navegação (breadcrumb) — mostra onde o usuário está, com atalhos para Home e a área atual */
+const SEP = " \\ ";
+function TrilhaNavegacao({ segmentos }) {
+  if (!segmentos || segmentos.length === 0) return null;
   return (
-    <div ref={innerRef} style={{ position: "relative" }}>
-      <Botao tipo="laranja" style={{ padding: "6px 14px", fontSize: 13 }} onClick={aoAbrirFechar}>🗂️ Administrativo ▾</Botao>
-      {aberto && (
-        <div style={{
-          position: "absolute", top: "calc(100% + 8px)", right: 0, background: "#fff", borderRadius: 10,
-          boxShadow: "0 14px 34px rgba(45,61,112,.28)", minWidth: 240, overflow: "hidden", zIndex: 40,
-          border: `1px solid ${CORES.cinza}`,
-        }}>
-          {itens.map((it) => (
-            <button key={it.id} type="button" onClick={() => aoNavegar(it.id)} style={{
-              display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", border: "none",
-              borderBottom: `1px solid ${CORES.cinzaClaro}`, padding: "10px 14px", cursor: "pointer",
-              background: "#fff", color: CORES.azul, fontSize: 13.5, fontFamily: "inherit",
-            }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = CORES.cinzaAzul)}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "#fff")}>
-              <span style={{ width: 18, textAlign: "center", flexShrink: 0 }}>{it.icone}</span>
-              {it.rotulo}
-            </button>
-          ))}
-        </div>
-      )}
+    <div className="so-tela" style={{ background: "#fff", borderBottom: `1px solid ${CORES.cinzaClaro}`, padding: "9px 22px", fontSize: 12.5, color: CORES.cinza, fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
+      {segmentos.map((s, i) => {
+        const ultimo = i === segmentos.length - 1;
+        return (
+          <span key={i}>
+            {i > 0 && SEP}
+            {s.aoClicar && !ultimo ? (
+              <span onClick={s.aoClicar} style={{ cursor: "pointer", color: CORES.azul }}
+                onMouseEnter={(e) => (e.currentTarget.style.textDecoration = "underline")}
+                onMouseLeave={(e) => (e.currentTarget.style.textDecoration = "none")}>{s.rotulo}</span>
+            ) : (
+              <span style={{ color: ultimo ? CORES.azul : CORES.cinza, fontWeight: ultimo ? 700 : 400 }}>{s.rotulo}</span>
+            )}
+          </span>
+        );
+      })}
+      {"\\"}
     </div>
   );
 }
@@ -2463,7 +2461,7 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
     <div style={{ minHeight: "100vh", background: CORES.cinzaClaro, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
       <div style={{ background: "#fff", borderRadius: 14, padding: 40, width: "min(420px, 92%)", borderTop: `5px solid ${CORES.laranja}`, boxShadow: "0 12px 40px rgba(45,61,112,.12)" }}>
         <div style={{ textAlign: "center", marginBottom: 24 }}>
-          <div style={{ fontSize: 26, fontWeight: 800, color: CORES.azul, letterSpacing: ".02em" }}>AURA <span style={{ color: CORES.laranja }}>360</span> Planta</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: CORES.azul, letterSpacing: ".02em" }}>AURA <span style={{ color: CORES.laranja }}>360°</span> Planta</div>
           <div style={{ fontSize: 13, color: CORES.cinza, marginTop: 4, textTransform: "uppercase", letterSpacing: ".12em" }}>Portal integrado · Aura Minerals</div>
           {AMBIENTE === "teste" && <div style={{ marginTop: 10, display: "inline-block", background: CORES.laranja, color: "#fff", borderRadius: 8, padding: "3px 12px", fontSize: 11.5, fontWeight: 700, letterSpacing: ".03em" }}>🧪 AMBIENTE DE TESTES</div>}
         </div>
@@ -2544,8 +2542,38 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
    App principal
    ============================================================ */
 /* ============================================================
-   AURA 360 Planta — Home do portal (áreas macro)
+   AURA 360° Planta — Home do portal (áreas macro)
    ============================================================ */
+/* Segundo menu do Administrativo — escolha do sistema (hoje só "Compra"; espaço para futuros sistemas) */
+function MenuAdministrativo({ aoEscolher, aoVoltarPortal }) {
+  const sistemas = [
+    { id: "COMPRAS", titulo: "Compra", icone: "🛒", cor: CORES.azul, desc: "Solicitação de compras, cadastros, materiais e relatórios." },
+  ];
+  return (
+    <div>
+      <button type="button" onClick={aoVoltarPortal} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>
+        ← Portal AURA 360°
+      </button>
+      <h1 style={{ color: CORES.azul, margin: "6px 0 4px", fontSize: 24 }}>🗂️ Administrativo</h1>
+      <p style={{ color: CORES.cinza, fontSize: 14, margin: "0 0 22px" }}>Selecione o sistema que deseja abrir.</p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
+        {sistemas.map((s) => (
+          <div key={s.id} onClick={() => aoEscolher(s.id)} style={{
+            background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 12, padding: "26px 20px", cursor: "pointer",
+            transition: "transform .15s, box-shadow .15s", borderTop: `4px solid ${s.cor}`,
+          }}
+            onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "0 10px 24px rgba(45,61,112,.14)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}>
+            <div style={{ fontSize: 30 }}>{s.icone}</div>
+            <div style={{ fontWeight: 800, color: CORES.azul, marginTop: 10, fontSize: 16 }}>{s.titulo}</div>
+            <div style={{ fontSize: 13, color: CORES.cinza, marginTop: 6 }}>{s.desc}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function PortalHome({ nome, aoAbrir }) {
   const areas = [
     { id: "ADMIN", titulo: "Administrativo", icone: "📋", cor: CORES.azul, ativo: true,
@@ -2563,7 +2591,7 @@ function PortalHome({ nome, aoAbrir }) {
       <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 22, flexWrap: "wrap" }}>
         <Mascote tamanho={96} style={{ flex: "0 0 auto" }} />
         <div style={{ flex: "1 1 260px", minWidth: 0 }}>
-          <h1 style={{ color: CORES.azul, margin: "0 0 4px", fontSize: 26 }}>Olá, {nome.split(" ")[0]}. Bem-vindo ao AURA 360 Planta.</h1>
+          <h1 style={{ color: CORES.azul, margin: "0 0 4px", fontSize: 26 }}>Olá, {nome.split(" ")[0]}. Bem-vindo ao AURA 360° Planta.</h1>
           <p style={{ color: CORES.cinza, fontSize: 14, margin: 0 }}>Selecione uma área para começar.</p>
         </div>
       </div>
@@ -2615,17 +2643,9 @@ function App() {
   const [usuario, setUsuario] = useState(null);
   const [area, setArea] = useState(null); // null = Home do portal | "ADMIN" | "SEG" | "OPER"
   const [tela, setTela] = useState("MENU"); // navegação dentro da área Administrativo
+  const [appAdmin, setAppAdmin] = useState(null); // segundo menu do Administrativo: null | "COMPRAS" (futuros sistemas entram aqui)
   const [emails, setEmails] = useState(null);
-  const [menuAdminAberto, setMenuAdminAberto] = useState(false); // dropdown "Administrativo" na barra do topo
-  const menuAdminRef = useRef(null);
-
-  // Fecha o dropdown "Administrativo" ao clicar fora dele
-  useEffect(() => {
-    if (!menuAdminAberto) return;
-    const aoClicarFora = (e) => { if (menuAdminRef.current && !menuAdminRef.current.contains(e.target)) setMenuAdminAberto(false); };
-    document.addEventListener("mousedown", aoClicarFora);
-    return () => document.removeEventListener("mousedown", aoClicarFora);
-  }, [menuAdminAberto]);
+  const [configAba, setConfigAba] = useState("usuarios"); // aba ativa em Configurações (usado no atalho/breadcrumb)
 
   useEffect(() => {
     (async () => {
@@ -2736,7 +2756,7 @@ function App() {
       const d = comLog(dados, usuario, "Acesso", "Saiu do sistema", "", usuario.email);
       setDados(d); await salvarDados(d);
     }
-    setUsuario(null); setArea(null); setTela("MENU");
+    setUsuario(null); setArea(null); setTela("MENU"); setAppAdmin(null);
     try { await window.storage.delete(SESSION_KEY, false); } catch (e) {}
   };
 
@@ -2810,14 +2830,31 @@ function App() {
   const MENU = [
     { id: "COMPRAS", rotulo: "Solicitação de Compras", icone: "🛒", desc: "Requisite itens da base de materiais" },
     { id: "CADASTROS", rotulo: "Solicitação de Cadastros", icone: "📋", desc: "Solicite cadastro de novos materiais" },
-    { id: "MATERIAIS", rotulo: "Atualização de Materiais", icone: "⟳", desc: "Sincronize a base MateriaisDeCompra.csv" },
     { id: "RELATORIOS", rotulo: "Relatórios de Compras / Cadastros", icone: "📊", desc: "Consulte, filtre, conclua e exporte" },
   ];
-  // Navegação do Administrativo (sidebar + dropdown do topo); Configurações só para administradores
+  // Navegação do Administrativo (sidebar); Configurações (com a aba Materiais) só para administradores
   const itensAdmin = usuarioAtual.perfil === "Administrador"
-    ? [...MENU, { id: "CONFIG", rotulo: "Configurações", icone: "⚙️", desc: "Usuários, auditoria e versão" }]
+    ? [...MENU, { id: "CONFIG", rotulo: "Configurações", icone: "⚙️", desc: "Usuários, materiais, auditoria e versão" }]
     : MENU;
-  const irParaAdmin = (id) => { setArea("ADMIN"); setTela(id); setMenuAdminAberto(false); };
+
+  // Trilha de navegação (breadcrumb) — reflete onde o usuário está dentro do portal
+  const ROTULOS_TELA_ADMIN = { MENU: "Solicitação de Compras", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios" };
+  const ROTULOS_ABA_CONFIG = { usuarios: "Usuários", registros: "Registros (Auditoria)", materiais: "Materiais", sobre: "Sobre" };
+  const irParaHome = () => { setArea(null); setTela("MENU"); setAppAdmin(null); };
+  const trilha = (() => {
+    if (area === null) return [];
+    const home = { rotulo: "Home", aoClicar: irParaHome };
+    if (area === "ADMIN") {
+      const admin = { rotulo: "Administração", aoClicar: () => setAppAdmin(null) };
+      if (appAdmin === null) return [home, admin];
+      const base = [home, admin, { rotulo: "Compra", aoClicar: () => setTela("MENU") }];
+      if (tela === "CONFIG") return [...base, { rotulo: "Configurações", aoClicar: () => setConfigAba("usuarios") }, { rotulo: ROTULOS_ABA_CONFIG[configAba] || "Usuários" }];
+      return [...base, { rotulo: ROTULOS_TELA_ADMIN[tela] || "Solicitação de Compras" }];
+    }
+    if (area === "SEG") return [home, { rotulo: "Segurança" }];
+    if (area === "OPER") return [home, { rotulo: "Operação" }];
+    return [home];
+  })();
 
   return (
     <div style={{ minHeight: "100vh", background: CORES.cinzaClaro, fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
@@ -2845,35 +2882,38 @@ function App() {
 
       {/* Cabeçalho */}
       <header style={{ background: CORES.azul, color: "#fff", padding: "0 22px", display: "flex", alignItems: "center", justifyContent: "space-between", height: 62, position: "sticky", top: 0, zIndex: 30, boxShadow: "0 2px 10px rgba(45,61,112,.25)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, cursor: "pointer" }} onClick={() => { setArea(null); setTela("MENU"); }}>
-          <div style={{ fontWeight: 800, fontSize: 17, letterSpacing: ".03em" }}>AURA <span style={{ color: CORES.laranja }}>360</span> <span style={{ opacity: .85, fontWeight: 700 }}>Planta</span></div>
-          <div style={{ fontSize: 12, opacity: 0.75, borderLeft: "1px solid rgba(255,255,255,.3)", paddingLeft: 14, display: window.innerWidth < 560 ? "none" : "block" }}>Portal integrado da Planta</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, cursor: "pointer" }} onClick={irParaHome}>
+          <div style={{ fontWeight: 800, fontSize: 17, letterSpacing: ".03em" }}>AURA <span style={{ color: CORES.laranja }}>360°</span> <span style={{ opacity: .85, fontWeight: 700 }}>Planta</span></div>
+          <div style={{ fontSize: 12, opacity: 0.75, borderLeft: "1px solid rgba(255,255,255,.3)", paddingLeft: 14, display: window.innerWidth < 560 ? "none" : "block" }}>Portal Integrado Da Planta</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 13, opacity: 0.9 }}>{usuarioAtual.nome} · <em style={{ opacity: 0.8 }}>{usuarioAtual.perfil}</em></span>
-          <MenuAdminTopo itens={itensAdmin} aberto={menuAdminAberto} aoAbrirFechar={() => setMenuAdminAberto((v) => !v)} aoNavegar={irParaAdmin} innerRef={menuAdminRef} />
           <Botao tipo="contorno" style={{ padding: "6px 14px", fontSize: 13, background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }} onClick={sair}>Sair</Botao>
         </div>
       </header>
 
+      <TrilhaNavegacao segmentos={trilha} />
+
       <main style={{ maxWidth: (typeof window !== "undefined" && window.innerWidth < 900) ? "100%" : "80vw", width: "100%", margin: "0 auto", padding: "26px 18px 60px", boxSizing: "border-box" }}>
         {/* Home do portal — 3 áreas macro */}
         {area === null && (
-          <PortalHome nome={usuarioAtual.nome} aoAbrir={(a) => { setArea(a); setTela("MENU"); }} />
+          <PortalHome nome={usuarioAtual.nome} aoAbrir={(a) => { setArea(a); setTela("MENU"); setAppAdmin(null); }} />
         )}
 
-        {/* Área 1 — Administrativo (app de compras e solicitações) — navegação em sidebar, padrão do app de POPs */}
-        {area === "ADMIN" && (
+        {/* Área 1 — Administrativo: segundo menu (escolha do sistema) → sistema de Compras (sidebar, padrão do app de POPs) */}
+        {area === "ADMIN" && appAdmin === null && (
+          <MenuAdministrativo aoEscolher={(id) => setAppAdmin(id)} aoVoltarPortal={irParaHome} />
+        )}
+        {area === "ADMIN" && appAdmin === "COMPRAS" && (
           <div style={{ display: "grid", gridTemplateColumns: (typeof window !== "undefined" && window.innerWidth < 800) ? "1fr" : "232px 1fr", gap: 20, alignItems: "start" }}>
-            <SidebarAdministrativo itens={itensAdmin} telaAtual={tela === "MENU" ? "COMPRAS" : tela} aoNavegar={(id) => setTela(id)} aoVoltarPortal={() => { setArea(null); setTela("MENU"); }} />
+            <SidebarAdministrativo itens={itensAdmin} telaAtual={tela === "MENU" ? "COMPRAS" : tela} aoNavegar={(id) => setTela(id)} aoVoltarPortal={() => setAppAdmin(null)} />
 
             <div style={{ minWidth: 0 }}>
               {tela === "MENU" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
-              {tela === "MATERIAIS" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuarioAtual} />}
               {tela === "RELATORIOS" && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
-              {tela === "CONFIG" && <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+              {tela === "CONFIG" && <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} aba={configAba} setAba={setConfigAba} />}
             </div>
           </div>
         )}
