@@ -88,8 +88,8 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.0.0";
-const VERSAO_DATA = "2026-08-19"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
+const VERSAO_APP = "1.1.0";
+const VERSAO_DATA = "2026-08-21"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
@@ -176,8 +176,58 @@ async function hashSenha(senha, salt, metodo) {
 // Sempre há um método de hash (Web Crypto ou fallback do modo demonstração)
 const criptoDisponivel = () => true;
 
+/* ============================================================
+   Catálogo de Grupos e Subsistemas — topologia do AURA 360° Planta
+   (estrutura fixa do produto; não é editável pelo usuário final)
+   Perfis: "GM" (administrador geral, acesso total) | "Administrador" (futuro,
+   administrador de um Subsistema específico) | "Usuário Comum".
+   ============================================================ */
+const CATALOGO_GRUPOS = [
+  {
+    id: "ADMIN", nome: "Administrativo",
+    subsistemas: [
+      {
+        id: "COMPRAS", nome: "Compra", externo: false,
+        features: [
+          { id: "TELA_COMPRAS", nome: "Solicitação de Compras" },
+          { id: "TELA_CADASTROS", nome: "Solicitação de Cadastros" },
+          { id: "TELA_RELATORIOS", nome: "Relatórios de Compras / Cadastros" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "SEG", nome: "Segurança",
+    subsistemas: [
+      // Sistema externo (app próprio, login próprio) — atalho temporário até o SSO (Entra ID) existir
+      { id: "POPS", nome: "Gestão de Procedimentos", externo: true, url: "", features: [] },
+    ],
+  },
+  { id: "OPER", nome: "Operação", subsistemas: [] },
+];
+
+// Permissões padrão: preserva o acesso que já existia (Compra sempre liberado);
+// subsistemas novos (ainda não integrados de fato) começam desligados por padrão.
+const permissoesDefault = () => ({
+  grupos: { ADMIN: true, SEG: false, OPER: false },
+  subsistemas: { COMPRAS: true, POPS: false },
+  features: { TELA_COMPRAS: true, TELA_CADASTROS: true, TELA_RELATORIOS: true },
+});
+
+const EH_GM = (u) => !!u && u.perfil === "GM";
+
+// Migração idempotente: perfil antigo "Administrador" → "GM"; garante permissoes em usuários sem o campo
+function migrarUsuarios(usuarios) {
+  const out = {};
+  for (const [email, u] of Object.entries(usuarios || {})) {
+    const perfil = u.perfil === "Administrador" ? "GM" : u.perfil;
+    out[email] = { ...u, perfil, permissoes: u.permissoes || permissoesDefault() };
+  }
+  return out;
+}
+
 const dadosVazios = () => ({
-  usuarios: { [PRIMEIRO_ADMIN]: { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "Administrador" } },
+  usuarios: { [PRIMEIRO_ADMIN]: { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "GM" } },
   compras: [],
   cadastros: [],
   materiais: MATERIAIS_INICIAIS,
@@ -216,8 +266,9 @@ async function carregarDados() {
     const r = await window.storage.get(STORAGE_KEY, true);
     if (r && r.value) {
       const d = JSON.parse(r.value);
-      if (!d.usuarios[PRIMEIRO_ADMIN]) d.usuarios[PRIMEIRO_ADMIN] = { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "Administrador" };
-      else d.usuarios[PRIMEIRO_ADMIN].perfil = "Administrador";
+      d.usuarios = migrarUsuarios(d.usuarios);
+      if (!d.usuarios[PRIMEIRO_ADMIN]) d.usuarios[PRIMEIRO_ADMIN] = { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "GM" };
+      else d.usuarios[PRIMEIRO_ADMIN].perfil = "GM";
       if (!Array.isArray(d.auditoria)) d.auditoria = []; // migração: bases antigas sem trilha
       return d;
     }
@@ -1155,7 +1206,7 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
   const [fDescricao, setFDescricao] = useState("");
   const [fStatus, setFStatus] = useState("Todos");
   const [modal, setModal] = useState(null); // { registro, acao: "concluir" | "cancelar", texto }
-  const admin = usuario.perfil === "Administrador";
+  const admin = usuario.perfil === "GM";
   const lista = modo === "Compra" ? "compras" : "cadastros";
 
   const registros = (modo === "Compra" ? dados.compras : dados.cadastros).filter(
@@ -1725,7 +1776,7 @@ function TelaAuditoria({ dados }) {
 }
 
 function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
-  if (usuario.perfil !== "Administrador") {
+  if (usuario.perfil !== "GM") {
     return (
       <Cartao style={{ maxWidth: 520, margin: "0 auto", textAlign: "center", padding: 36 }}>
         <div style={{ fontSize: 40 }}>🔒</div>
@@ -1740,7 +1791,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
   const [novaSenha, setNovaSenha] = useState("");
 
   const mudarPerfil = async (email, perfil) => {
-    const admins = Object.entries(dados.usuarios).filter(([, u]) => u.perfil === "Administrador");
+    const admins = Object.entries(dados.usuarios).filter(([, u]) => u.perfil === "GM");
     if (perfil === "Usuário Comum" && admins.length === 1 && admins[0][0] === email) {
       avisar("Não é possível remover o último administrador do sistema."); return;
     }
@@ -1771,7 +1822,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
     if (!novo.nome.trim()) { avisar("Informe o nome do usuário."); return; }
     if (!email.endsWith(DOMINIO) || email.length <= DOMINIO.length) { avisar(`O e-mail deve pertencer ao domínio ${DOMINIO}.`); return; }
     if (dados.usuarios[email]) { avisar("Este e-mail já está cadastrado."); return; }
-    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { nome: novo.nome.trim(), perfil: novo.perfil } } };
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { nome: novo.nome.trim(), perfil: novo.perfil, permissoes: permissoesDefault() } } };
     nd = comLog(nd, usuario, "Usuários", "Cadastrou usuário", `${novo.nome.trim()} <${email}> — ${novo.perfil}`, email);
     setDados(nd); await salvarDados(nd);
     setNovo({ nome: "", email: "", perfil: "Usuário Comum" });
@@ -1788,8 +1839,8 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
 
   const removerUsuario = async (email) => {
     if (email === usuario.email) { avisar("Você não pode remover o próprio usuário logado."); return; }
-    const admins = Object.entries(dados.usuarios).filter(([, u]) => u.perfil === "Administrador");
-    if (dados.usuarios[email].perfil === "Administrador" && admins.length === 1) {
+    const admins = Object.entries(dados.usuarios).filter(([, u]) => u.perfil === "GM");
+    if (dados.usuarios[email].perfil === "GM" && admins.length === 1) {
       avisar("Não é possível remover o último administrador do sistema."); return;
     }
     const { [email]: _, ...restantes } = dados.usuarios;
@@ -1824,6 +1875,19 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
     setDados(nd); await salvarDados(nd);
     setResetEmail(null); setNovaSenha("");
     avisar("Senha provisória definida. Recomende ao usuário trocá-la (Redefinir → criar nova no próximo acesso).");
+  };
+
+  // Checklist de permissões (Grupos/Subsistemas/Funcionalidades) — só GM edita.
+  // Sem acesso ao Grupo/Subsistema: fica visível porém desabilitado para o usuário.
+  // Dentro de um Subsistema já acessível: funcionalidades sem permissão ficam ocultas.
+  const alternarPermissao = async (email, categoria, id) => {
+    const u = dados.usuarios[email];
+    const atuais = u.permissoes || permissoesDefault();
+    const novoValor = !(atuais[categoria][id] !== false);
+    const permissoes = { ...atuais, [categoria]: { ...atuais[categoria], [id]: novoValor } };
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
+    nd = comLog(nd, usuario, "Usuários", `Alterou permissão (${categoria}/${id}) para "${novoValor ? "Liberado" : "Bloqueado"}"`, email, email);
+    setDados(nd); await salvarDados(nd);
   };
 
   const th = { padding: 8, fontSize: 11.5, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" };
@@ -1875,9 +1939,9 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
       <div>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Configurações — Usuários</h2>
       <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>
-        Somente usuários cadastrados aqui têm acesso ao sistema. Perfis: <strong>Usuário Comum</strong> e <strong>Administrador</strong>.
+        Somente usuários cadastrados aqui têm acesso ao sistema. Perfis: <strong>Usuário Comum</strong> e <strong>GM</strong> (administrador geral).
         Cada usuário comum pode ter um ou mais <strong>administradores responsáveis</strong>: as solicitações dele são notificadas
-        apenas a esses responsáveis (sem vínculo definido, o alerta vai a todos os administradores).
+        apenas a esses responsáveis (sem vínculo definido, o alerta vai a todos os GM).
         As senhas são armazenadas apenas como hash criptográfico — nem os administradores conseguem visualizá-las.
       </p>
 
@@ -1889,7 +1953,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
           <Campo label="E-mail"><input style={inputStyle} value={novo.email} onChange={(e) => setNovo({ ...novo, email: e.target.value })} placeholder={`nome.sobrenome${DOMINIO}`} /></Campo>
           <Campo label="Perfil">
             <select style={inputStyle} value={novo.perfil} onChange={(e) => setNovo({ ...novo, perfil: e.target.value })}>
-              <option>Usuário Comum</option><option>Administrador</option>
+              <option>Usuário Comum</option><option>GM</option>
             </select>
           </Campo>
           <Botao tipo="laranja" onClick={adicionarUsuario}>Adicionar</Botao>
@@ -1898,7 +1962,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
       </div>
 
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead><tr><th style={th}>Nome</th><th style={th}>E-mail</th><th style={th}>Perfil</th><th style={th}>Administradores responsáveis</th><th style={th}>Senha</th><th style={th}>Ações</th></tr></thead>
+        <thead><tr><th style={th}>Nome</th><th style={th}>E-mail</th><th style={th}>Perfil</th><th style={th}>Administradores responsáveis</th><th style={th}>Permissões (Grupos/Subsistemas)</th><th style={th}>Senha</th><th style={th}>Ações</th></tr></thead>
         <tbody>
           {Object.entries(dados.usuarios).map(([email, u]) => (
             <tr key={email}>
@@ -1910,15 +1974,15 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
               <td style={td}>
                 <select style={{ ...inputStyle, width: 160, padding: "5px 8px", fontSize: 13.5 }} value={u.perfil} onChange={(e) => mudarPerfil(email, e.target.value)}>
                   <option>Usuário Comum</option>
-                  <option>Administrador</option>
+                  <option>GM</option>
                 </select>
               </td>
               <td style={{ ...td, minWidth: 210 }}>
-                {u.perfil === "Administrador" ? (
-                  <span style={{ color: CORES.cinza, fontSize: 12.5 }}>— (é administrador)</span>
+                {u.perfil === "GM" ? (
+                  <span style={{ color: CORES.cinza, fontSize: 12.5 }}>— (é GM)</span>
                 ) : (() => {
-                  const listaAdm = Object.entries(dados.usuarios).filter(([, x]) => x.perfil === "Administrador");
-                  const vinc = (u.administradores || []).filter((e2) => dados.usuarios[e2] && dados.usuarios[e2].perfil === "Administrador");
+                  const listaAdm = Object.entries(dados.usuarios).filter(([, x]) => x.perfil === "GM");
+                  const vinc = (u.administradores || []).filter((e2) => dados.usuarios[e2] && dados.usuarios[e2].perfil === "GM");
                   return (
                     <details>
                       <summary style={{ cursor: "pointer", fontSize: 13, color: vinc.length ? CORES.azul : CORES.laranja, fontWeight: 600 }}>
@@ -1932,6 +1996,60 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                             {adm.nome} <span style={{ color: CORES.cinza }}>({e2})</span>
                           </label>
                         ))}
+                      </div>
+                    </details>
+                  );
+                })()}
+              </td>
+              <td style={{ ...td, minWidth: 240 }}>
+                {u.perfil === "GM" ? (
+                  <span style={{ color: CORES.cinza, fontSize: 12.5 }}>— (GM tem acesso total)</span>
+                ) : (() => {
+                  const perm = u.permissoes || permissoesDefault();
+                  const totalLiberado = CATALOGO_GRUPOS.reduce((n, g) => n + (perm.grupos[g.id] ? 1 : 0), 0);
+                  return (
+                    <details>
+                      <summary style={{ cursor: "pointer", fontSize: 13, color: totalLiberado ? CORES.azul : CORES.laranja, fontWeight: 600 }}>
+                        {totalLiberado} de {CATALOGO_GRUPOS.length} grupo{CATALOGO_GRUPOS.length > 1 ? "s" : ""} liberado{totalLiberado === 1 ? "" : "s"}
+                      </summary>
+                      <div style={{ marginTop: 6, background: CORES.cinzaClaro, borderRadius: 6, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+                        {CATALOGO_GRUPOS.map((g) => (
+                          <div key={g.id}>
+                            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, fontWeight: 700, cursor: "pointer" }}>
+                              <input type="checkbox" checked={!!perm.grupos[g.id]} onChange={() => alternarPermissao(email, "grupos", g.id)}
+                                style={{ width: 15, height: 15, accentColor: CORES.laranja }} />
+                              {g.nome}
+                            </label>
+                            {g.subsistemas.length > 0 && (
+                              <div style={{ marginLeft: 24, marginTop: 4, display: "flex", flexDirection: "column", gap: 4 }}>
+                                {g.subsistemas.map((s) => (
+                                  <div key={s.id}>
+                                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
+                                      <input type="checkbox" checked={!!perm.subsistemas[s.id]} onChange={() => alternarPermissao(email, "subsistemas", s.id)}
+                                        style={{ width: 14, height: 14, accentColor: CORES.laranja }} />
+                                      {s.nome}{s.externo ? " ↗" : ""}
+                                    </label>
+                                    {s.features.length > 0 && (
+                                      <div style={{ marginLeft: 22, marginTop: 2, display: "flex", flexWrap: "wrap", gap: "2px 12px" }}>
+                                        {s.features.map((f) => (
+                                          <label key={f.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: CORES.cinza, cursor: "pointer" }}>
+                                            <input type="checkbox" checked={perm.features[f.id] !== false} onChange={() => alternarPermissao(email, "features", f.id)}
+                                              style={{ width: 13, height: 13, accentColor: CORES.laranja }} />
+                                            {f.nome}
+                                          </label>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        <p style={{ margin: 0, fontSize: 10.5, color: CORES.cinza, fontStyle: "italic" }}>
+                          Sem acesso ao Grupo/Subsistema: fica visível, porém desabilitado. Funcionalidade sem
+                          permissão dentro de um Subsistema já acessível: fica oculta.
+                        </p>
                       </div>
                     </details>
                   );
@@ -2251,14 +2369,15 @@ async function carregarDoGraph() {
   const [cps, cds, us, aud] = await Promise.all([
     spCarregarLista("compras"), spCarregarLista("cadastros"), spCarregarLista("usuarios"), spCarregarLista("auditoria"),
   ]);
-  const usuarios = {};
+  let usuarios = {};
   us.forEach((r) => { usuarios[r.id] = r.dado; });
+  usuarios = migrarUsuarios(usuarios);
   // Garante o primeiro administrador (0.1)
   if (!usuarios[PRIMEIRO_ADMIN]) {
-    usuarios[PRIMEIRO_ADMIN] = { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "Administrador" };
+    usuarios[PRIMEIRO_ADMIN] = { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "GM" };
     await spCriar("usuarios", PRIMEIRO_ADMIN, usuarios[PRIMEIRO_ADMIN]);
-  } else if (usuarios[PRIMEIRO_ADMIN].perfil !== "Administrador") {
-    usuarios[PRIMEIRO_ADMIN].perfil = "Administrador";
+  } else if (usuarios[PRIMEIRO_ADMIN].perfil !== "GM") {
+    usuarios[PRIMEIRO_ADMIN].perfil = "GM";
     await spAtualizar("usuarios", PRIMEIRO_ADMIN, usuarios[PRIMEIRO_ADMIN]);
   }
   // Auditoria: ordenada por carimbo (ts) para exibição estável e cronológica
@@ -2544,37 +2663,59 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
 /* ============================================================
    AURA 360° Planta — Home do portal (áreas macro)
    ============================================================ */
-/* Segundo menu do Administrativo — escolha do sistema (hoje só "Compra"; espaço para futuros sistemas) */
-function MenuAdministrativo({ aoEscolher, aoVoltarPortal }) {
-  const sistemas = [
-    { id: "COMPRAS", titulo: "Compra", icone: "🛒", cor: CORES.azul, desc: "Solicitação de compras, cadastros, materiais e relatórios." },
-  ];
+/* Segundo menu de um Grupo — escolha do Subsistema (genérico, reutilizável por qualquer Grupo do catálogo).
+   Subsistemas "externos" (apps próprios, como o Gestão de Procedimentos) abrem em nova aba — atalho
+   temporário até existir SSO real (Entra ID) entre o AURA 360° e esses sistemas. */
+const SISTEMAS_POR_GRUPO = {
+  ADMIN: [{ id: "COMPRAS", titulo: "Compra", icone: "🛒", cor: CORES.azul, desc: "Solicitação de compras, cadastros, materiais e relatórios.", externo: false }],
+  SEG: [{ id: "POPS", titulo: "Gestão de Procedimentos", icone: "📄", cor: "#b45309", desc: "Procedimentos operacionais — inspeções, revisão e aprovação SSMA.", externo: true, url: "" }],
+  OPER: [],
+};
+const TITULOS_GRUPO = { ADMIN: "🗂️ Administrativo", SEG: "🦺 Segurança", OPER: "🏭 Operação" };
+
+function SegundoMenuGrupo({ grupoId, aoEscolher, aoVoltarPortal, permissoesUsuario, ehGM }) {
+  const sistemas = SISTEMAS_POR_GRUPO[grupoId] || [];
   return (
     <div>
       <button type="button" onClick={aoVoltarPortal} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>
         ← Portal AURA 360°
       </button>
-      <h1 style={{ color: CORES.azul, margin: "6px 0 4px", fontSize: 24 }}>🗂️ Administrativo</h1>
+      <h1 style={{ color: CORES.azul, margin: "6px 0 4px", fontSize: 24 }}>{TITULOS_GRUPO[grupoId] || grupoId}</h1>
       <p style={{ color: CORES.cinza, fontSize: 14, margin: "0 0 22px" }}>Selecione o sistema que deseja abrir.</p>
+      {sistemas.length === 0 ? (
+        <p style={{ color: CORES.cinza, fontSize: 14 }}>Nenhum sistema disponível nesta área ainda.</p>
+      ) : (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
-        {sistemas.map((s) => (
-          <div key={s.id} onClick={() => aoEscolher(s.id)} style={{
-            background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 12, padding: "26px 20px", cursor: "pointer",
+        {sistemas.map((s) => {
+          const permitido = ehGM || (permissoesUsuario && permissoesUsuario.subsistemas[s.id] === true);
+          return (
+          <div key={s.id} onClick={() => permitido && aoEscolher(s)}
+            title={!permitido ? "Sem acesso — solicite a um administrador do sistema" : s.externo ? "Abre em nova aba (login próprio, integração temporária)" : ""}
+            style={{
+            background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 12, padding: "26px 20px",
+            cursor: permitido ? "pointer" : "not-allowed", opacity: permitido ? 1 : 0.5, position: "relative",
             transition: "transform .15s, box-shadow .15s", borderTop: `4px solid ${s.cor}`,
           }}
-            onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "0 10px 24px rgba(45,61,112,.14)"; }}
+            onMouseEnter={(e) => { if (permitido) { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "0 10px 24px rgba(45,61,112,.14)"; } }}
             onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}>
+            {!permitido ? (
+              <span style={{ position: "absolute", top: 12, right: 12, fontSize: 10.5, fontWeight: 700, color: CORES.cinza, background: CORES.cinzaClaro, border: `1px solid ${CORES.cinza}`, borderRadius: 10, padding: "2px 8px" }}>🔒 Sem acesso</span>
+            ) : s.externo && (
+              <span style={{ position: "absolute", top: 12, right: 12, fontSize: 10.5, fontWeight: 700, color: CORES.azul, background: CORES.cinzaAzul, borderRadius: 10, padding: "2px 8px" }}>↗ Abre em nova aba</span>
+            )}
             <div style={{ fontSize: 30 }}>{s.icone}</div>
             <div style={{ fontWeight: 800, color: CORES.azul, marginTop: 10, fontSize: 16 }}>{s.titulo}</div>
             <div style={{ fontSize: 13, color: CORES.cinza, marginTop: 6 }}>{s.desc}</div>
           </div>
-        ))}
+          );
+        })}
       </div>
+      )}
     </div>
   );
 }
 
-function PortalHome({ nome, aoAbrir }) {
+function PortalHome({ nome, aoAbrir, permissoesUsuario, ehGM }) {
   const areas = [
     { id: "ADMIN", titulo: "Administrativo", icone: "📋", cor: CORES.azul, ativo: true,
       desc: "Requisições, compras, cadastros e serviços.",
@@ -2596,14 +2737,23 @@ function PortalHome({ nome, aoAbrir }) {
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 18 }}>
-        {areas.map((a) => (
-          <div key={a.id} onClick={() => aoAbrir(a.id)} style={{
-            background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 14, padding: "24px 22px", cursor: "pointer",
+        {areas.map((a) => {
+          const permitido = ehGM || (permissoesUsuario && permissoesUsuario.grupos[a.id] === true);
+          return (
+          <div key={a.id} onClick={() => permitido && aoAbrir(a.id)}
+            title={!permitido ? "Sem acesso — solicite a um administrador do sistema" : ""}
+            style={{
+            background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 14, padding: "24px 22px",
+            cursor: permitido ? "pointer" : "not-allowed", opacity: permitido ? 1 : 0.5,
             transition: "transform .15s, box-shadow .15s", borderTop: `4px solid ${a.cor}`, position: "relative",
           }}
-            onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = "0 12px 28px rgba(45,61,112,.15)"; }}
+            onMouseEnter={(e) => { if (permitido) { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = "0 12px 28px rgba(45,61,112,.15)"; } }}
             onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}>
-            {!a.ativo && <span style={{ position: "absolute", top: 14, right: 14, fontSize: 10.5, fontWeight: 700, color: "#b45309", background: "#fff4e6", border: "1px solid #f0c98a", borderRadius: 10, padding: "2px 8px" }}>Em breve</span>}
+            {!permitido ? (
+              <span style={{ position: "absolute", top: 14, right: 14, fontSize: 10.5, fontWeight: 700, color: CORES.cinza, background: CORES.cinzaClaro, border: `1px solid ${CORES.cinza}`, borderRadius: 10, padding: "2px 8px" }}>🔒 Sem acesso</span>
+            ) : !a.ativo && (
+              <span style={{ position: "absolute", top: 14, right: 14, fontSize: 10.5, fontWeight: 700, color: "#b45309", background: "#fff4e6", border: "1px solid #f0c98a", borderRadius: 10, padding: "2px 8px" }}>Em breve</span>
+            )}
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ fontSize: 34 }}>{a.icone}</div>
               <div style={{ fontWeight: 800, color: CORES.azul, fontSize: 20 }}>{a.titulo}</div>
@@ -2613,7 +2763,8 @@ function PortalHome({ nome, aoAbrir }) {
               {a.itens.map((it) => <li key={it}>{it}</li>)}
             </ul>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -2730,10 +2881,10 @@ function App() {
   // crie uma nova no próximo acesso — evita bloqueio caso a senha seja esquecida.
   const resetPrimeiroAdmin = async () => {
     const d0 = dados || dadosVazios();
-    const u = d0.usuarios[PRIMEIRO_ADMIN] || { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "Administrador" };
+    const u = d0.usuarios[PRIMEIRO_ADMIN] || { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "GM" };
     const { senha, ...semSenha } = u;
-    let nd = { ...d0, usuarios: { ...d0.usuarios, [PRIMEIRO_ADMIN]: { ...semSenha, perfil: "Administrador" } } };
-    nd = comLog(nd, { email: PRIMEIRO_ADMIN, nome: semSenha.nome, perfil: "Administrador" }, "Acesso", "Redefiniu a própria senha (primeiro administrador) pela tela de login", "", PRIMEIRO_ADMIN);
+    let nd = { ...d0, usuarios: { ...d0.usuarios, [PRIMEIRO_ADMIN]: { ...semSenha, perfil: "GM" } } };
+    nd = comLog(nd, { email: PRIMEIRO_ADMIN, nome: semSenha.nome, perfil: "GM" }, "Acesso", "Redefiniu a própria senha (primeiro administrador) pela tela de login", "", PRIMEIRO_ADMIN);
     setDados(nd); await salvarDados(nd);
     return { ok: true };
   };
@@ -2760,7 +2911,7 @@ function App() {
     try { await window.storage.delete(SESSION_KEY, false); } catch (e) {}
   };
 
-  const listaAdmins = (d) => Object.entries(d.usuarios).filter(([, u]) => u.perfil === "Administrador").map(([e]) => e);
+  const listaAdmins = (d) => Object.entries(d.usuarios).filter(([, u]) => u.perfil === "GM").map(([e]) => e);
 
   // Tenta envio automático (Graph); sem Entra ID, prepara o e-mail para abrir no Outlook
   const notificar = async (mensagens) => {
@@ -2776,7 +2927,7 @@ function App() {
   const notificarSolicitacao = (tipo, u, d, resumo, dataHora, tabela) => {
     // Administradores vinculados ao usuário; sem vínculo definido, alerta todos (garantia de que nada se perde)
     const vinculados = ((d.usuarios[u.email] && d.usuarios[u.email].administradores) || [])
-      .filter((e) => d.usuarios[e] && d.usuarios[e].perfil === "Administrador");
+      .filter((e) => d.usuarios[e] && d.usuarios[e].perfil === "GM");
     const admins = vinculados.length ? vinculados : listaAdmins(d);
     const rotuloAdmins = vinculados.length
       ? `Alerta aos administradores responsáveis (${tipo})`
@@ -2828,14 +2979,23 @@ function App() {
   const usuarioAtual = { ...usuario, ...(dados.usuarios[usuario.email] || {}) };
 
   const MENU = [
-    { id: "COMPRAS", rotulo: "Solicitação de Compras", icone: "🛒", desc: "Requisite itens da base de materiais" },
-    { id: "CADASTROS", rotulo: "Solicitação de Cadastros", icone: "📋", desc: "Solicite cadastro de novos materiais" },
-    { id: "RELATORIOS", rotulo: "Relatórios de Compras / Cadastros", icone: "📊", desc: "Consulte, filtre, conclua e exporte" },
+    { id: "COMPRAS", rotulo: "Solicitação de Compras", icone: "🛒", desc: "Requisite itens da base de materiais", feature: "TELA_COMPRAS" },
+    { id: "CADASTROS", rotulo: "Solicitação de Cadastros", icone: "📋", desc: "Solicite cadastro de novos materiais", feature: "TELA_CADASTROS" },
+    { id: "RELATORIOS", rotulo: "Relatórios de Compras / Cadastros", icone: "📊", desc: "Consulte, filtre, conclua e exporte", feature: "TELA_RELATORIOS" },
   ];
-  // Navegação do Administrativo (sidebar); Configurações (com a aba Materiais) só para administradores
-  const itensAdmin = usuarioAtual.perfil === "Administrador"
-    ? [...MENU, { id: "CONFIG", rotulo: "Configurações", icone: "⚙️", desc: "Usuários, materiais, auditoria e versão" }]
-    : MENU;
+  // Funcionalidades sem permissão ficam OCULTAS (o usuário já está dentro de um Subsistema ao qual tem acesso)
+  const ehGM = EH_GM(usuarioAtual);
+  const permissoesUsuario = usuarioAtual.permissoes || permissoesDefault();
+  const MENU_VISIVEL = ehGM ? MENU : MENU.filter((m) => permissoesUsuario.features[m.feature] !== false);
+  // Navegação do Administrativo (sidebar); Configurações (com a aba Materiais) só para GM
+  const itensAdmin = ehGM
+    ? [...MENU_VISIVEL, { id: "CONFIG", rotulo: "Configurações", icone: "⚙️", desc: "Usuários, materiais, auditoria e versão" }]
+    : MENU_VISIVEL;
+  // Subsistemas externos (apps próprios) abrem em nova aba — atalho temporário até existir SSO real
+  const abrirSistemaExterno = (sistema) => {
+    if (!sistema.url) { avisar(`"${sistema.titulo}" ainda não foi publicado. Fale com o administrador do sistema.`); return; }
+    window.open(sistema.url, "_blank", "noopener");
+  };
 
   // Trilha de navegação (breadcrumb) — reflete onde o usuário está dentro do portal
   const ROTULOS_TELA_ADMIN = { MENU: "Solicitação de Compras", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios" };
@@ -2897,12 +3057,12 @@ function App() {
       <main style={{ maxWidth: (typeof window !== "undefined" && window.innerWidth < 900) ? "100%" : "80vw", width: "100%", margin: "0 auto", padding: "26px 18px 60px", boxSizing: "border-box" }}>
         {/* Home do portal — 3 áreas macro */}
         {area === null && (
-          <PortalHome nome={usuarioAtual.nome} aoAbrir={(a) => { setArea(a); setTela("MENU"); setAppAdmin(null); }} />
+          <PortalHome nome={usuarioAtual.nome} aoAbrir={(a) => { setArea(a); setTela("MENU"); setAppAdmin(null); }} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
         )}
 
         {/* Área 1 — Administrativo: segundo menu (escolha do sistema) → sistema de Compras (sidebar, padrão do app de POPs) */}
         {area === "ADMIN" && appAdmin === null && (
-          <MenuAdministrativo aoEscolher={(id) => setAppAdmin(id)} aoVoltarPortal={irParaHome} />
+          <SegundoMenuGrupo grupoId="ADMIN" aoEscolher={(s) => (s.externo ? abrirSistemaExterno(s) : setAppAdmin(s.id))} aoVoltarPortal={irParaHome} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
         )}
         {area === "ADMIN" && appAdmin === "COMPRAS" && (
           <div style={{ display: "grid", gridTemplateColumns: (typeof window !== "undefined" && window.innerWidth < 800) ? "1fr" : "232px 1fr", gap: 20, alignItems: "start" }}>
@@ -2918,8 +3078,10 @@ function App() {
           </div>
         )}
 
-        {/* Área 2 — Segurança (em desenvolvimento) */}
-        {area === "SEG" && <EmDesenvolvimento titulo="Segurança" icone="🦺" itens={["Inspeções", "Abordagens", "Ações", "EPIs"]} aoVoltar={() => { setArea(null); setTela("MENU"); }} />}
+        {/* Área 2 — Segurança: segundo menu com o atalho temporário para o Gestão de Procedimentos */}
+        {area === "SEG" && (
+          <SegundoMenuGrupo grupoId="SEG" aoEscolher={abrirSistemaExterno} aoVoltarPortal={irParaHome} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
+        )}
 
         {/* Área 3 — Operação (em desenvolvimento) */}
         {area === "OPER" && <EmDesenvolvimento titulo="Operação" icone="⚙️" itens={["Resumo Reagentes"]} aoVoltar={() => { setArea(null); setTela("MENU"); }} />}
