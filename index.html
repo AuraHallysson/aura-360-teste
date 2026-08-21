@@ -2987,10 +2987,10 @@ function App() {
   const ehGM = EH_GM(usuarioAtual);
   const permissoesUsuario = usuarioAtual.permissoes || permissoesDefault();
   const MENU_VISIVEL = ehGM ? MENU : MENU.filter((m) => permissoesUsuario.features[m.feature] !== false);
-  // Navegação do Administrativo (sidebar); Configurações (com a aba Materiais) só para GM
-  const itensAdmin = ehGM
-    ? [...MENU_VISIVEL, { id: "CONFIG", rotulo: "Configurações", icone: "⚙️", desc: "Usuários, materiais, auditoria e versão" }]
-    : MENU_VISIVEL;
+  // Navegação do sistema de Compras e Cadastros (sidebar). Configurações é administração do
+  // AURA 360° Planta como um todo (usuários, permissões, auditoria) — fica num nível global,
+  // não dentro de um Subsistema específico.
+  const itensAdmin = MENU_VISIVEL;
   // Subsistemas externos (apps próprios) abrem em nova aba — atalho temporário até existir SSO real
   const abrirSistemaExterno = (sistema) => {
     if (!sistema.url) { avisar(`"${sistema.titulo}" ainda não foi publicado. Fale com o administrador do sistema.`); return; }
@@ -3008,11 +3008,11 @@ function App() {
       const admin = { rotulo: "Administração", aoClicar: () => setAppAdmin(null) };
       if (appAdmin === null) return [home, admin];
       const base = [home, admin, { rotulo: "Compras e Cadastros", aoClicar: () => setTela("MENU") }];
-      if (tela === "CONFIG") return [...base, { rotulo: "Configurações", aoClicar: () => setConfigAba("usuarios") }, { rotulo: ROTULOS_ABA_CONFIG[configAba] || "Usuários" }];
       return [...base, { rotulo: ROTULOS_TELA_ADMIN[tela] || "Solicitação de Compras" }];
     }
     if (area === "SEG") return [home, { rotulo: "Segurança" }];
     if (area === "OPER") return [home, { rotulo: "Operação" }];
+    if (area === "CONFIG") return [home, { rotulo: "Configurações", aoClicar: () => setConfigAba("usuarios") }, { rotulo: ROTULOS_ABA_CONFIG[configAba] || "Usuários" }];
     return [home];
   })();
 
@@ -3048,6 +3048,7 @@ function App() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 13, opacity: 0.9 }}>{usuarioAtual.nome} · <em style={{ opacity: 0.8 }}>{usuarioAtual.perfil}</em></span>
+          {ehGM && <Botao tipo="laranja" style={{ padding: "6px 14px", fontSize: 13 }} onClick={() => setArea("CONFIG")}>⚙ Configurações</Botao>}
           <Botao tipo="contorno" style={{ padding: "6px 14px", fontSize: 13, background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }} onClick={sair}>Sair</Botao>
         </div>
       </header>
@@ -3073,7 +3074,6 @@ function App() {
               {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "RELATORIOS" && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
-              {tela === "CONFIG" && <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} aba={configAba} setAba={setConfigAba} />}
             </div>
           </div>
         )}
@@ -3085,6 +3085,17 @@ function App() {
 
         {/* Área 3 — Operação (em desenvolvimento) */}
         {area === "OPER" && <EmDesenvolvimento titulo="Operação" icone="⚙️" itens={["Resumo Reagentes"]} aoVoltar={() => { setArea(null); setTela("MENU"); }} />}
+
+        {/* Configurações — administração do AURA 360° Planta como um todo (usuários, permissões,
+            auditoria e versão); nível global, fora de qualquer Grupo/Subsistema. Só GM acessa. */}
+        {area === "CONFIG" && (
+          <div>
+            <button type="button" onClick={irParaHome} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>
+              ← Portal AURA 360°
+            </button>
+            <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} aba={configAba} setAba={setConfigAba} />
+          </div>
+        )}
       </main>
 
       <RodapeVersao />
