@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.1.0";
+const VERSAO_APP = "1.1.1";
 const VERSAO_DATA = "2026-08-21"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1110,7 +1110,6 @@ function TelaMateriais({ dados, setDados, usuario }) {
   };
 
   // Modo real (Entra ID): baixa o arquivo direto do SharePoint, sem nenhuma interação
-  // (Homologação). Builds PÚBLICOS (Teste) devem usar um placeholder.
   const URL_PASTA_SHAREPOINT = "https://tenant-teste.sharepoint.com/:f:/r/sites/Site_Teste/Shared%20Documents/Materiais";
   const baixarDoSharePoint = async () => {
     const app = obterMsal();
@@ -2248,12 +2247,11 @@ function obterMsal() {
    DADOS MULTIUSUÁRIO — SharePoint Lists via Microsoft Graph
    ------------------------------------------------------------
    Com o Entra ID ativo, solicitações, cadastros e usuários ficam em
-   listas compartilhadas em um site do SharePoint (ambiente de teste) — todos os usuários
+   listas compartilhadas em um site do SharePoint — todos os usuários
    veem os mesmos dados. As listas são criadas automaticamente na 1ª vez.
    Permissões Graph (delegadas): Sites.ReadWrite.All (+ Sites.Manage.All
    apenas para a criação inicial das listas).
    Sem Entra ID (demonstração), os dados permanecem locais no navegador.
-
    ============================================================ */
 const SP_SITE_HOST = "tenant-teste.sharepoint.com";
 const SP_SITE_PATH = "/sites/Site_Teste";
@@ -2666,11 +2664,15 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
    AURA 360° Planta — Home do portal (áreas macro)
    ============================================================ */
 /* Segundo menu de um Grupo — escolha do Subsistema (genérico, reutilizável por qualquer Grupo do catálogo).
-   Subsistemas "externos" (apps próprios, como o Gestão de Procedimentos) abrem em nova aba — atalho
-   temporário até existir SSO real (Entra ID) entre o AURA 360° e esses sistemas. */
+   Subsistemas "externos" (apps próprios, como o Gestão de Procedimentos) rodam embutidos (iframe) dentro
+   do próprio AURA 360°, sem abrir aba/janela extra — atalho temporário até existir SSO real (Entra ID)
+   entre o AURA 360° e esses sistemas (login continua sendo feito dentro do próprio sistema embutido). */
 const SISTEMAS_POR_GRUPO = {
   ADMIN: [{ id: "COMPRAS", titulo: "Compras e Cadastros", icone: "🛒", cor: CORES.azul, desc: "Solicitação de compras, cadastros, materiais e relatórios.", externo: false }],
-  SEG: [{ id: "POPS", titulo: "Gestão de Procedimentos", icone: "📄", cor: "#b45309", desc: "Procedimentos operacionais — inspeções, revisão e aprovação SSMA.", externo: true, url: "" }],
+  // aura-pops ainda não tem endereço público — só responde em localhost:3100 na máquina onde o
+  // `node aura-pops/server.js` estiver rodando. Por isso o link só é preenchido em Homologação (uso local
+  // nesta máquina); em Teste (GitHub Pages, acessado de qualquer computador) fica vazio de propósito.
+  SEG: [{ id: "POPS", titulo: "Gestão de Procedimentos", icone: "📄", cor: "#b45309", desc: "Procedimentos operacionais — inspeções, revisão e aprovação SSMA.", externo: true, modoAbertura: "embutido", url: AMBIENTE === "teste" ? "" : "http://localhost:3100/" }],
   OPER: [],
 };
 const TITULOS_GRUPO = { ADMIN: "🗂️ Administrativo", SEG: "🦺 Segurança", OPER: "🏭 Operação" };
@@ -2692,7 +2694,7 @@ function SegundoMenuGrupo({ grupoId, aoEscolher, aoVoltarPortal, permissoesUsuar
           const permitido = ehGM || (permissoesUsuario && permissoesUsuario.subsistemas[s.id] === true);
           return (
           <div key={s.id} onClick={() => permitido && aoEscolher(s)}
-            title={!permitido ? "Sem acesso — solicite a um administrador do sistema" : s.externo ? "Abre em nova aba (login próprio, integração temporária)" : ""}
+            title={!permitido ? "Sem acesso — solicite a um administrador do sistema" : s.externo ? (s.modoAbertura === "embutido" ? "Abre nesta mesma tela (login próprio, integração temporária)" : "Abre em nova aba (login próprio, integração temporária)") : ""}
             style={{
             background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 12, padding: "26px 20px",
             cursor: permitido ? "pointer" : "not-allowed", opacity: permitido ? 1 : 0.5, position: "relative",
@@ -2703,7 +2705,9 @@ function SegundoMenuGrupo({ grupoId, aoEscolher, aoVoltarPortal, permissoesUsuar
             {!permitido ? (
               <span style={{ position: "absolute", top: 12, right: 12, fontSize: 10.5, fontWeight: 700, color: CORES.cinza, background: CORES.cinzaClaro, border: `1px solid ${CORES.cinza}`, borderRadius: 10, padding: "2px 8px" }}>🔒 Sem acesso</span>
             ) : s.externo && (
-              <span style={{ position: "absolute", top: 12, right: 12, fontSize: 10.5, fontWeight: 700, color: CORES.azul, background: CORES.cinzaAzul, borderRadius: 10, padding: "2px 8px" }}>↗ Abre em nova aba</span>
+              <span style={{ position: "absolute", top: 12, right: 12, fontSize: 10.5, fontWeight: 700, color: CORES.azul, background: CORES.cinzaAzul, borderRadius: 10, padding: "2px 8px" }}>
+                {s.modoAbertura === "embutido" ? "▣ Abre nesta tela" : "↗ Abre em nova aba"}
+              </span>
             )}
             <div style={{ fontSize: 30 }}>{s.icone}</div>
             <div style={{ fontWeight: 800, color: CORES.azul, marginTop: 10, fontSize: 16 }}>{s.titulo}</div>
@@ -2799,6 +2803,7 @@ function App() {
   const [appAdmin, setAppAdmin] = useState(null); // segundo menu do Administrativo: null | "COMPRAS" (futuros sistemas entram aqui)
   const [emails, setEmails] = useState(null);
   const [configAba, setConfigAba] = useState("usuarios"); // aba ativa em Configurações (usado no atalho/breadcrumb)
+  const [sistemaEmbutido, setSistemaEmbutido] = useState(null); // subsistema externo aberto embutido (iframe), sem janela/aba extra
 
   useEffect(() => {
     (async () => {
@@ -2993,16 +2998,18 @@ function App() {
   // AURA 360° Planta como um todo (usuários, permissões, auditoria) — fica num nível global,
   // não dentro de um Subsistema específico.
   const itensAdmin = MENU_VISIVEL;
-  // Subsistemas externos (apps próprios) abrem em nova aba — atalho temporário até existir SSO real
+  // Subsistemas externos (apps próprios): quando modoAbertura="embutido", rodam dentro da própria tela do
+  // AURA 360° via iframe (sem aba/janela extra); senão, abrem em nova aba. Atalho temporário até existir SSO real.
   const abrirSistemaExterno = (sistema) => {
     if (!sistema.url) { avisar(`"${sistema.titulo}" ainda não foi publicado. Fale com o administrador do sistema.`); return; }
+    if (sistema.modoAbertura === "embutido") { setSistemaEmbutido(sistema); return; }
     window.open(sistema.url, "_blank", "noopener");
   };
 
   // Trilha de navegação (breadcrumb) — reflete onde o usuário está dentro do portal
   const ROTULOS_TELA_ADMIN = { MENU: "Solicitação de Compras", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios" };
   const ROTULOS_ABA_CONFIG = { usuarios: "Usuários", registros: "Registros (Auditoria)", materiais: "Materiais", sobre: "Sobre" };
-  const irParaHome = () => { setArea(null); setTela("MENU"); setAppAdmin(null); };
+  const irParaHome = () => { setArea(null); setTela("MENU"); setAppAdmin(null); setSistemaEmbutido(null); };
   const trilha = (() => {
     if (area === null) return [];
     const home = { rotulo: "Home", aoClicar: irParaHome };
@@ -3012,7 +3019,11 @@ function App() {
       const base = [home, admin, { rotulo: "Compras e Cadastros", aoClicar: () => setTela("MENU") }];
       return [...base, { rotulo: ROTULOS_TELA_ADMIN[tela] || "Solicitação de Compras" }];
     }
-    if (area === "SEG") return [home, { rotulo: "Segurança" }];
+    if (area === "SEG") {
+      const seg = { rotulo: "Segurança", aoClicar: () => setSistemaEmbutido(null) };
+      if (!sistemaEmbutido) return [home, { rotulo: "Segurança" }];
+      return [home, seg, { rotulo: sistemaEmbutido.titulo }];
+    }
     if (area === "OPER") return [home, { rotulo: "Operação" }];
     if (area === "CONFIG") return [home, { rotulo: "Configurações", aoClicar: () => setConfigAba("usuarios") }, { rotulo: ROTULOS_ABA_CONFIG[configAba] || "Usuários" }];
     return [home];
@@ -3080,8 +3091,17 @@ function App() {
           </div>
         )}
 
-        {/* Área 2 — Segurança: segundo menu com o atalho temporário para o Gestão de Procedimentos */}
-        {area === "SEG" && (
+        {/* Área 2 — Segurança: segundo menu, ou o sistema externo já aberto embutido (iframe) na própria tela */}
+        {area === "SEG" && sistemaEmbutido && (
+          <div>
+            <button type="button" onClick={() => setSistemaEmbutido(null)} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>
+              ← Segurança
+            </button>
+            <iframe src={sistemaEmbutido.url} title={sistemaEmbutido.titulo}
+              style={{ width: "100%", height: "calc(100vh - 230px)", minHeight: 480, border: `1px solid ${CORES.cinza}`, borderRadius: 10, background: "#fff", display: "block" }} />
+          </div>
+        )}
+        {area === "SEG" && !sistemaEmbutido && (
           <SegundoMenuGrupo grupoId="SEG" aoEscolher={abrirSistemaExterno} aoVoltarPortal={irParaHome} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
         )}
 
