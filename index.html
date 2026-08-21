@@ -187,7 +187,7 @@ const CATALOGO_GRUPOS = [
     id: "ADMIN", nome: "Administrativo",
     subsistemas: [
       {
-        id: "COMPRAS", nome: "Compra", externo: false,
+        id: "COMPRAS", nome: "Compras e Cadastros", externo: false,
         features: [
           { id: "TELA_COMPRAS", nome: "Solicitação de Compras" },
           { id: "TELA_CADASTROS", nome: "Solicitação de Cadastros" },
@@ -2493,7 +2493,7 @@ function SidebarAdministrativo({ itens, telaAtual, aoNavegar, aoVoltarPortal }) 
         <button type="button" onClick={aoVoltarPortal} style={{ border: "none", background: "none", color: "rgba(255,255,255,.75)", fontSize: 12, cursor: "pointer", padding: 0, fontFamily: "inherit", marginBottom: 8, display: "block" }}>
           ← Administrativo
         </button>
-        <div style={{ color: "#fff", fontWeight: 800, fontSize: 15 }}>🛒 Compra</div>
+        <div style={{ color: "#fff", fontWeight: 800, fontSize: 15 }}>🛒 Compras e Cadastros</div>
       </div>
       <nav style={{ flex: 1, padding: "8px 0" }}>
         {itens.map((it) => <ItemNav key={it.id} ativo={telaAtual === it.id} icone={it.icone} rotulo={it.rotulo} onClick={() => aoNavegar(it.id)} />)}
@@ -2667,7 +2667,7 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
    Subsistemas "externos" (apps próprios, como o Gestão de Procedimentos) abrem em nova aba — atalho
    temporário até existir SSO real (Entra ID) entre o AURA 360° e esses sistemas. */
 const SISTEMAS_POR_GRUPO = {
-  ADMIN: [{ id: "COMPRAS", titulo: "Compra", icone: "🛒", cor: CORES.azul, desc: "Solicitação de compras, cadastros, materiais e relatórios.", externo: false }],
+  ADMIN: [{ id: "COMPRAS", titulo: "Compras e Cadastros", icone: "🛒", cor: CORES.azul, desc: "Solicitação de compras, cadastros, materiais e relatórios.", externo: false }],
   SEG: [{ id: "POPS", titulo: "Gestão de Procedimentos", icone: "📄", cor: "#b45309", desc: "Procedimentos operacionais — inspeções, revisão e aprovação SSMA.", externo: true, url: "" }],
   OPER: [],
 };
@@ -3007,7 +3007,7 @@ function App() {
     if (area === "ADMIN") {
       const admin = { rotulo: "Administração", aoClicar: () => setAppAdmin(null) };
       if (appAdmin === null) return [home, admin];
-      const base = [home, admin, { rotulo: "Compra", aoClicar: () => setTela("MENU") }];
+      const base = [home, admin, { rotulo: "Compras e Cadastros", aoClicar: () => setTela("MENU") }];
       if (tela === "CONFIG") return [...base, { rotulo: "Configurações", aoClicar: () => setConfigAba("usuarios") }, { rotulo: ROTULOS_ABA_CONFIG[configAba] || "Usuários" }];
       return [...base, { rotulo: ROTULOS_TELA_ADMIN[tela] || "Solicitação de Compras" }];
     }
