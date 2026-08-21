@@ -210,20 +210,38 @@ const CATALOGO_GRUPOS = [
 
 // Permissões padrão: preserva o acesso que já existia (Compra sempre liberado);
 // subsistemas novos (ainda não integrados de fato) começam desligados por padrão.
+// adminDe: de quais Subsistemas (dentre os que o usuário já acessa) ele é administrador delegado
+// — só tem efeito quando o perfil é "Administrador Subsistema"; começa tudo desligado por padrão.
 const permissoesDefault = () => ({
   grupos: { ADMIN: true, SEG: false, OPER: false },
   subsistemas: { COMPRAS: true, POPS: false },
   features: { TELA_COMPRAS: true, TELA_CADASTROS: true, TELA_RELATORIOS: true },
+  adminDe: { COMPRAS: false, POPS: false },
 });
 
 const EH_GM = (u) => !!u && u.perfil === "GM";
+const EH_ADMIN_SUBSISTEMA = (u) => !!u && u.perfil === "Administrador Subsistema";
+// Subsistemas que este usuário administra por delegação do GM (lista de ids); vazio para
+// qualquer perfil que não seja "Administrador Subsistema" — GM não precisa disso, já tem acesso total.
+const subsistemasAdministradosPor = (u) => {
+  if (!EH_ADMIN_SUBSISTEMA(u)) return [];
+  const adminDe = (u.permissoes && u.permissoes.adminDe) || {};
+  return Object.keys(adminDe).filter((id) => adminDe[id] === true);
+};
+// Categorias da trilha de auditoria (SOX) pertencentes a cada Subsistema nativo — usado para
+// restringir o que um administrador de Subsistema vê em Registros. "Usuários"/"Acesso" são
+// eventos de plataforma (todo o AURA 360°), não de um Subsistema específico, e ficam de fora.
+const CATEGORIAS_POR_SUBSISTEMA = { COMPRAS: ["Compra", "Cadastro", "Movimentação", "Materiais"], POPS: [] };
 
-// Migração idempotente: perfil antigo "Administrador" → "GM"; garante permissoes em usuários sem o campo
+// Migração idempotente: perfil antigo "Administrador" → "GM"; garante permissoes (com adminDe e
+// ativo) em usuários de versões anteriores, sem apagar nada que já exista.
 function migrarUsuarios(usuarios) {
   const out = {};
   for (const [email, u] of Object.entries(usuarios || {})) {
     const perfil = u.perfil === "Administrador" ? "GM" : u.perfil;
-    out[email] = { ...u, perfil, permissoes: u.permissoes || permissoesDefault() };
+    const permissoes = { ...permissoesDefault(), ...(u.permissoes || {}) };
+    if (!permissoes.adminDe) permissoes.adminDe = permissoesDefault().adminDe;
+    out[email] = { ativo: true, ...u, perfil, permissoes };
   }
   return out;
 }
@@ -1673,14 +1691,18 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
    Registros de Auditoria (SOX) — trilha imutável de movimentações
    Somente leitura + filtros + exportação (PDF via impressão, Excel).
    ============================================================ */
-function TelaAuditoria({ dados }) {
+function TelaAuditoria({ dados, categoriasVisiveis }) {
   const [fCat, setFCat] = useState("Todas");
   const [fTexto, setFTexto] = useState("");
   const [fUsuario, setFUsuario] = useState("");
   const [fDe, setFDe] = useState("");   // yyyy-mm-dd
   const [fAte, setFAte] = useState("");
 
-  const todos = dados.auditoria || [];
+  // Sem categoriasVisiveis (GM): vê tudo. Com a lista (administrador de Subsistema): só as
+  // categorias do(s) Subsistema(s) que ele administra — restrição aplicada aqui na origem dos
+  // dados, então também vale para as exportações (Excel/PDF), não só para a tela.
+  const categorias = categoriasVisiveis || LOG_CATEGORIAS;
+  const todos = (dados.auditoria || []).filter((r) => categorias.includes(r.categoria));
   // Mais recentes primeiro (ordena pelo carimbo imutável ts)
   const ordenados = todos.slice().sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
   const dentroData = (ts) => {
@@ -1720,11 +1742,16 @@ function TelaAuditoria({ dados }) {
           Cada registro guarda <strong>quem</strong>, <strong>o quê</strong> e <strong>quando</strong>. Total: <strong>{todos.length}</strong> registro(s)
           {" · "}exibindo <strong>{filtrados.length}</strong> após filtros.
         </p>
+        {categoriasVisiveis && categoriasVisiveis.length === 0 && (
+          <p style={{ fontSize: 12.5, color: CORES.laranja, background: "#fff4e6", border: "1px solid #f0c98a", borderRadius: 8, padding: "8px 12px", margin: "0 0 14px" }}>
+            Este Subsistema mantém sua própria trilha de auditoria dentro dele mesmo — não há registros deste tipo aqui.
+          </p>
+        )}
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
           <div style={{ flex: "1 1 150px" }}><Campo label="Categoria">
             <select style={inputStyle} value={fCat} onChange={(e) => setFCat(e.target.value)}>
               <option>Todas</option>
-              {LOG_CATEGORIAS.map((c) => <option key={c}>{c}</option>)}
+              {categorias.map((c) => <option key={c}>{c}</option>)}
             </select>
           </Campo></div>
           <div style={{ flex: "1 1 180px" }}><Campo label="Usuário"><input style={inputStyle} value={fUsuario} onChange={(e) => setFUsuario(e.target.value)} placeholder="Nome ou e-mail…" /></Campo></div>
@@ -1777,29 +1804,32 @@ function TelaAuditoria({ dados }) {
 }
 
 function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
-  if (usuario.perfil !== "GM") {
+  const ehGM = usuario.perfil === "GM";
+  const subsistemasQueAdministro = subsistemasAdministradosPor(usuario);
+  if (!ehGM && subsistemasQueAdministro.length === 0) {
     return (
       <Cartao style={{ maxWidth: 520, margin: "0 auto", textAlign: "center", padding: 36 }}>
         <div style={{ fontSize: 40 }}>🔒</div>
         <h2 style={{ color: CORES.azul, margin: "8px 0 4px" }}>Acesso restrito</h2>
-        <p style={{ color: CORES.cinza, fontSize: 14 }}>As Configurações exigem login de Administrador. Solicite acesso a um administrador do sistema.</p>
+        <p style={{ color: CORES.cinza, fontSize: 14 }}>As Configurações exigem login de Administrador (GM) ou de administrador de algum Subsistema. Solicite acesso a um administrador do sistema.</p>
       </Cartao>
     );
   }
 
   const [novo, setNovo] = useState({ nome: "", email: "", perfil: "Usuário Comum" });
+  const [novoSub, setNovoSub] = useState({ nome: "", email: "" });
   const [resetEmail, setResetEmail] = useState(null);
   const [novaSenha, setNovaSenha] = useState("");
 
   const mudarPerfil = async (email, perfil) => {
     const admins = Object.entries(dados.usuarios).filter(([, u]) => u.perfil === "GM");
-    if (perfil === "Usuário Comum" && admins.length === 1 && admins[0][0] === email) {
+    if (perfil !== "GM" && admins.length === 1 && admins[0][0] === email) {
       avisar("Não é possível remover o último administrador do sistema."); return;
     }
-    // Ao rebaixar um administrador, ele deixa de ser responsável por qualquer usuário
+    // Ao rebaixar um administrador (de GM para qualquer outro perfil), ele deixa de ser responsável por qualquer usuário
     const usuarios = Object.fromEntries(Object.entries(dados.usuarios).map(([e, u]) => {
       let nu = e === email ? { ...u, perfil } : u;
-      if (perfil === "Usuário Comum" && nu.administradores && nu.administradores.includes(email)) {
+      if (perfil !== "GM" && nu.administradores && nu.administradores.includes(email)) {
         nu = { ...nu, administradores: nu.administradores.filter((adm) => adm !== email) };
       }
       return [e, nu];
@@ -1823,7 +1853,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
     if (!novo.nome.trim()) { avisar("Informe o nome do usuário."); return; }
     if (!email.endsWith(DOMINIO) || email.length <= DOMINIO.length) { avisar(`O e-mail deve pertencer ao domínio ${DOMINIO}.`); return; }
     if (dados.usuarios[email]) { avisar("Este e-mail já está cadastrado."); return; }
-    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { nome: novo.nome.trim(), perfil: novo.perfil, permissoes: permissoesDefault() } } };
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { nome: novo.nome.trim(), perfil: novo.perfil, ativo: true, permissoes: permissoesDefault() } } };
     nd = comLog(nd, usuario, "Usuários", "Cadastrou usuário", `${novo.nome.trim()} <${email}> — ${novo.perfil}`, email);
     setDados(nd); await salvarDados(nd);
     setNovo({ nome: "", email: "", perfil: "Usuário Comum" });
@@ -1891,13 +1921,53 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
     setDados(nd); await salvarDados(nd);
   };
 
+  // Desativa/reativa o acesso de um usuário sem excluir seu histórico (diferente de "Remover",
+  // que continua só do GM). Usuário desativado não consegue logar (ver tentarLoginDemo/entrar).
+  const alternarAtivo = async (email) => {
+    if (email === usuario.email) { avisar("Você não pode desativar o próprio usuário logado."); return; }
+    const u = dados.usuarios[email];
+    const novoValor = u.ativo === false; // estava desativado → reativa; senão, desativa
+    if (u.perfil === "GM" && !novoValor) {
+      const admins = Object.entries(dados.usuarios).filter(([, x]) => x.perfil === "GM" && x.ativo !== false);
+      if (admins.length === 1) { avisar("Não é possível desativar o último administrador do sistema."); return; }
+    }
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, ativo: novoValor } } };
+    nd = comLog(nd, usuario, "Usuários", novoValor ? "Reativou usuário" : "Desativou usuário", email, email);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  // Cadastro simplificado usado por um administrador de Subsistema (não-GM): o novo usuário
+  // entra como "Usuário Comum", sem acesso a nada além do(s) Subsistema(s) que esse administrador
+  // administra — ele não pode conceder acesso a áreas que não são dele.
+  const criarUsuarioParaSubsistema = async () => {
+    const email = novoSub.email.trim().toLowerCase();
+    if (!novoSub.nome.trim()) { avisar("Informe o nome do usuário."); return; }
+    if (!email.endsWith(DOMINIO) || email.length <= DOMINIO.length) { avisar(`O e-mail deve pertencer ao domínio ${DOMINIO}.`); return; }
+    if (dados.usuarios[email]) { avisar("Este e-mail já está cadastrado."); return; }
+    const permissoes = permissoesDefault();
+    Object.keys(permissoes.subsistemas).forEach((id) => { permissoes.subsistemas[id] = subsistemasQueAdministro.includes(id); });
+    Object.keys(permissoes.adminDe).forEach((id) => { permissoes.adminDe[id] = false; });
+    CATALOGO_GRUPOS.forEach((g) => { permissoes.grupos[g.id] = g.subsistemas.some((s) => subsistemasQueAdministro.includes(s.id)); });
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { nome: novoSub.nome.trim(), perfil: "Usuário Comum", ativo: true, permissoes } } };
+    nd = comLog(nd, usuario, "Usuários", "Cadastrou usuário (administrador de Subsistema)", `${novoSub.nome.trim()} <${email}>`, email);
+    setDados(nd); await salvarDados(nd);
+    setNovoSub({ nome: "", email: "" });
+    avisar(`Usuário cadastrado com acesso ao(s) Subsistema(s) que você administra. No primeiro acesso, ${novoSub.nome.trim().split(" ")[0]} criará a própria senha.`);
+  };
+
   const th = { padding: 8, fontSize: 11.5, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" };
   const td = { padding: "8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 14, color: CORES.azul };
 
   return (
     <Cartao style={{ maxWidth: 1040, margin: "0 auto", position: "relative" }}>
+      {/* Administrador de Subsistema (não-GM) só vê as abas do(s) Subsistema(s) que ele administra:
+          Usuários (escopo restrito), Registros (categorias do seu Subsistema) e, só se administrar
+          Compras e Cadastros, Materiais. GM continua vendo tudo, sem restrição. */}
       <div className="so-tela" style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
-        {[["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"], ["materiais", "🔄 Materiais"], ["sobre", "ℹ️ Sobre"]].map(([id, rot]) => (
+        {(ehGM
+          ? [["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"], ["materiais", "🔄 Materiais"], ["sobre", "ℹ️ Sobre"]]
+          : [["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"], ...(subsistemasQueAdministro.includes("COMPRAS") ? [["materiais", "🔄 Materiais"]] : []), ["sobre", "ℹ️ Sobre"]]
+        ).map(([id, rot]) => (
           <button key={id} onClick={() => setAba(id)} style={{
             padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
             background: aba === id ? CORES.azul : CORES.cinzaClaro, color: aba === id ? "#fff" : CORES.azul,
@@ -1905,9 +1975,11 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
         ))}
       </div>
 
-      {aba === "registros" && <TelaAuditoria dados={dados} />}
+      {aba === "registros" && (
+        <TelaAuditoria dados={dados} categoriasVisiveis={ehGM ? undefined : subsistemasQueAdministro.flatMap((id) => CATEGORIAS_POR_SUBSISTEMA[id] || [])} />
+      )}
 
-      {aba === "materiais" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuario} />}
+      {aba === "materiais" && (ehGM || subsistemasQueAdministro.includes("COMPRAS")) && <TelaMateriais dados={dados} setDados={setDados} usuario={usuario} />}
 
       {aba === "sobre" && (
         <div style={{ maxWidth: 560 }}>
@@ -1936,11 +2008,12 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
         </div>
       )}
 
-      {aba === "usuarios" && (
+      {aba === "usuarios" && ehGM && (
       <div>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Configurações — Usuários</h2>
       <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>
-        Somente usuários cadastrados aqui têm acesso ao sistema. Perfis: <strong>Usuário Comum</strong> e <strong>GM</strong> (administrador geral).
+        Somente usuários cadastrados aqui têm acesso ao sistema. Perfis: <strong>Usuário Comum</strong>, <strong>Administrador Subsistema</strong> (poderes
+        delegados, restritos ao(s) Subsistema(s) marcados abaixo em "Administra o Subsistema") e <strong>GM</strong> (administrador geral, acesso total).
         Cada usuário comum pode ter um ou mais <strong>administradores responsáveis</strong>: as solicitações dele são notificadas
         apenas a esses responsáveis (sem vínculo definido, o alerta vai a todos os GM).
         As senhas são armazenadas apenas como hash criptográfico — nem os administradores conseguem visualizá-las.
@@ -1954,7 +2027,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
           <Campo label="E-mail"><input style={inputStyle} value={novo.email} onChange={(e) => setNovo({ ...novo, email: e.target.value })} placeholder={`nome.sobrenome${DOMINIO}`} /></Campo>
           <Campo label="Perfil">
             <select style={inputStyle} value={novo.perfil} onChange={(e) => setNovo({ ...novo, perfil: e.target.value })}>
-              <option>Usuário Comum</option><option>GM</option>
+              <option>Usuário Comum</option><option>Administrador Subsistema</option><option>GM</option>
             </select>
           </Campo>
           <Botao tipo="laranja" onClick={adicionarUsuario}>Adicionar</Botao>
@@ -1963,7 +2036,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
       </div>
 
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead><tr><th style={th}>Nome</th><th style={th}>E-mail</th><th style={th}>Perfil</th><th style={th}>Administradores responsáveis</th><th style={th}>Permissões (Grupos/Subsistemas)</th><th style={th}>Senha</th><th style={th}>Ações</th></tr></thead>
+        <thead><tr><th style={th}>Nome</th><th style={th}>E-mail</th><th style={th}>Perfil</th><th style={th}>Administradores responsáveis</th><th style={th}>Permissões (Grupos/Subsistemas)</th><th style={th}>Senha</th><th style={th}>Status</th><th style={th}>Ações</th></tr></thead>
         <tbody>
           {Object.entries(dados.usuarios).map(([email, u]) => (
             <tr key={email}>
@@ -1975,6 +2048,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
               <td style={td}>
                 <select style={{ ...inputStyle, width: 160, padding: "5px 8px", fontSize: 13.5 }} value={u.perfil} onChange={(e) => mudarPerfil(email, e.target.value)}>
                   <option>Usuário Comum</option>
+                  <option>Administrador Subsistema</option>
                   <option>GM</option>
                 </select>
               </td>
@@ -2051,6 +2125,26 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                           Sem acesso ao Grupo/Subsistema: fica visível, porém desabilitado. Funcionalidade sem
                           permissão dentro de um Subsistema já acessível: fica oculta.
                         </p>
+                        {u.perfil === "Administrador Subsistema" && (
+                          <div style={{ marginTop: 4, paddingTop: 10, borderTop: `2px solid ${CORES.azul}` }}>
+                            <strong style={{ fontSize: 11, color: CORES.laranja, textTransform: "uppercase", letterSpacing: ".05em" }}>Área Administração Subsistema</strong>
+                            <p style={{ margin: "2px 0 6px", fontSize: 10.5, color: CORES.cinza }}>
+                              Marque de qual(is) Subsistema(s) este usuário é administrador delegado — só pode administrar o que já está liberado acima.
+                            </p>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                              {CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).filter((s) => perm.subsistemas[s.id]).map((s) => (
+                                <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
+                                  <input type="checkbox" checked={!!(perm.adminDe && perm.adminDe[s.id])} onChange={() => alternarPermissao(email, "adminDe", s.id)}
+                                    style={{ width: 14, height: 14, accentColor: CORES.laranja }} />
+                                  {s.nome}
+                                </label>
+                              ))}
+                              {CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).filter((s) => perm.subsistemas[s.id]).length === 0 && (
+                                <span style={{ fontSize: 11, color: CORES.cinza, fontStyle: "italic" }}>Libere o acesso a algum Subsistema acima antes de torná-lo administrador dele.</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </details>
                   );
@@ -2060,6 +2154,11 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                 {AUTENTICACAO_REAL
                   ? <span style={{ color: CORES.cinza }}>Login Microsoft</span>
                   : u.senha ? <span style={{ color: "seagreen" }}>Definida ✓</span> : <span style={{ color: CORES.laranja }}>Criará no 1º acesso</span>}
+              </td>
+              <td style={{ ...td, whiteSpace: "nowrap" }}>
+                <Botao tipo={u.ativo === false ? "contorno" : "perigo"} style={{ padding: "4px 10px", fontSize: 12 }} disabled={email === usuario.email}
+                  title={email === usuario.email ? "Não é possível desativar o próprio usuário" : ""}
+                  onClick={() => alternarAtivo(email)}>{u.ativo === false ? "Desativado — Reativar" : "Ativo — Desativar"}</Botao>
               </td>
               <td style={{ ...td, whiteSpace: "nowrap" }}>
                 {!AUTENTICACAO_REAL && <Botao tipo="contorno" style={{ padding: "4px 10px", fontSize: 12, marginRight: 6 }}
@@ -2083,6 +2182,82 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
       </table>
       </div>
       )}
+
+      {/* Usuários — versão restrita para quem é "Administrador Subsistema" (não-GM): só toca no(s)
+          Subsistema(s) que lhe foram delegados. Sem perfil, sem "administradores responsáveis",
+          sem outros Subsistemas — e sem excluir usuário (isso continua só do GM). */}
+      {aba === "usuarios" && !ehGM && (() => {
+        const nomesAdmin = subsistemasQueAdministro.map((id) => (CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).find((s) => s.id === id) || {}).nome || id);
+        const linhas = Object.entries(dados.usuarios).filter(([, u]) => u.perfil !== "GM");
+        return (
+          <div>
+            <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Administração — {nomesAdmin.join(", ")}</h2>
+            <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>
+              Você administra {nomesAdmin.length > 1 ? "estes Subsistemas" : "este Subsistema"} por delegação do GM: pode liberar/bloquear
+              o acesso de usuários a ele(s), cadastrar novos usuários e desativar acessos. Outras áreas do AURA 360° Planta
+              (outros Subsistemas, perfis, senhas) continuam só com o GM.
+            </p>
+
+            <div style={{ background: CORES.cinzaClaro, borderRadius: 10, padding: 16, marginBottom: 20 }}>
+              <strong style={{ color: CORES.azul, fontSize: 13, textTransform: "uppercase", letterSpacing: ".05em" }}>Cadastrar usuário</strong>
+              <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.5fr auto", gap: 10, marginTop: 10, alignItems: "end" }}>
+                <Campo label="Nome"><input style={inputStyle} value={novoSub.nome} onChange={(e) => setNovoSub({ ...novoSub, nome: e.target.value })} placeholder="Nome completo" /></Campo>
+                <Campo label="E-mail"><input style={inputStyle} value={novoSub.email} onChange={(e) => setNovoSub({ ...novoSub, email: e.target.value })} placeholder={`nome.sobrenome${DOMINIO}`} /></Campo>
+                <Botao tipo="laranja" onClick={criarUsuarioParaSubsistema}>Adicionar</Botao>
+              </div>
+              <p style={{ fontSize: 11.5, color: CORES.cinza, margin: "8px 0 0" }}>
+                Entra como Usuário Comum, já com acesso a {nomesAdmin.join(", ")}. Cria a própria senha no primeiro acesso.
+              </p>
+            </div>
+
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <thead><tr>
+                <th style={th}>Nome</th><th style={th}>E-mail</th>
+                {subsistemasQueAdministro.map((subId) => <th key={subId} style={th}>{nomesAdmin[subsistemasQueAdministro.indexOf(subId)]}</th>)}
+                <th style={th}>Status</th>
+              </tr></thead>
+              <tbody>
+                {linhas.map(([email, u]) => {
+                  const perm = u.permissoes || permissoesDefault();
+                  return (
+                    <tr key={email}>
+                      <td style={td}>{u.nome}</td>
+                      <td style={td}>{email}</td>
+                      {subsistemasQueAdministro.map((subId) => {
+                        const sub = CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).find((s) => s.id === subId) || { features: [] };
+                        return (
+                          <td key={subId} style={{ ...td, minWidth: 170 }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, fontWeight: 700, cursor: "pointer" }}>
+                              <input type="checkbox" checked={!!perm.subsistemas[subId]} onChange={() => alternarPermissao(email, "subsistemas", subId)}
+                                style={{ width: 15, height: 15, accentColor: CORES.laranja }} />
+                              Acesso liberado
+                            </label>
+                            {perm.subsistemas[subId] && sub.features.length > 0 && (
+                              <div style={{ marginTop: 4, marginLeft: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+                                {sub.features.map((f) => (
+                                  <label key={f.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: CORES.cinza, cursor: "pointer" }}>
+                                    <input type="checkbox" checked={perm.features[f.id] !== false} onChange={() => alternarPermissao(email, "features", f.id)}
+                                      style={{ width: 13, height: 13, accentColor: CORES.laranja }} />
+                                    {f.nome}
+                                  </label>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td style={{ ...td, whiteSpace: "nowrap" }}>
+                        <Botao tipo={u.ativo === false ? "contorno" : "perigo"} style={{ padding: "4px 10px", fontSize: 12 }} disabled={email === usuario.email}
+                          onClick={() => alternarAtivo(email)}>{u.ativo === false ? "Desativado — Reativar" : "Ativo — Desativar"}</Botao>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
     </Cartao>
   );
 }
@@ -2850,6 +3025,7 @@ function App() {
       }
     }
     if (!d.usuarios[email]) return { erro: "Conta autenticada, mas não cadastrada no sistema. Solicite acesso a um administrador." };
+    if (d.usuarios[email].ativo === false) return { erro: "Este usuário está desativado. Solicite reativação a um administrador." };
     await concluirLogin(email, nomeOficial, d);
     return { ok: true };
   };
@@ -2859,6 +3035,7 @@ function App() {
     const d = dados || dadosVazios();
     const u = d.usuarios[email];
     if (!u) return { erro: "E-mail não cadastrado. Solicite acesso a um administrador do sistema." };
+    if (u.ativo === false) return { erro: "Este usuário está desativado. Solicite reativação a um administrador." };
     if (!u.senha) return { criarSenha: true }; // primeiro acesso: define a própria senha
     if (!criptoDisponivel()) return { erro: "Este navegador não suporta a verificação segura de senha." };
     try {
@@ -2872,6 +3049,7 @@ function App() {
   const criarSenhaELogar = async (email, senha) => {
     const d0 = dados || dadosVazios();
     if (!d0.usuarios[email]) return { erro: "E-mail não cadastrado." };
+    if (d0.usuarios[email].ativo === false) return { erro: "Este usuário está desativado. Solicite reativação a um administrador." };
     if (!criptoDisponivel()) return { erro: "Este navegador não suporta o armazenamento seguro de senha." };
     try {
       const salt = gerarSalt();
@@ -2992,6 +3170,7 @@ function App() {
   ];
   // Funcionalidades sem permissão ficam OCULTAS (o usuário já está dentro de um Subsistema ao qual tem acesso)
   const ehGM = EH_GM(usuarioAtual);
+  const souAdminDeAlgumSubsistema = subsistemasAdministradosPor(usuarioAtual).length > 0;
   const permissoesUsuario = usuarioAtual.permissoes || permissoesDefault();
   const MENU_VISIVEL = ehGM ? MENU : MENU.filter((m) => permissoesUsuario.features[m.feature] !== false);
   // Navegação do sistema de Compras e Cadastros (sidebar). Configurações é administração do
@@ -3065,7 +3244,7 @@ function App() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 13, opacity: 0.9 }}>{usuarioAtual.nome} · <em style={{ opacity: 0.8 }}>{usuarioAtual.perfil}</em></span>
-          {ehGM && <Botao tipo="laranja" style={{ padding: "6px 14px", fontSize: 13 }} onClick={() => setArea("CONFIG")}>⚙ Configurações</Botao>}
+          {(ehGM || souAdminDeAlgumSubsistema) && <Botao tipo="laranja" style={{ padding: "6px 14px", fontSize: 13 }} onClick={() => setArea("CONFIG")}>⚙ Configurações</Botao>}
           <Botao tipo="contorno" style={{ padding: "6px 14px", fontSize: 13, background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }} onClick={sair}>Sair</Botao>
         </div>
       </header>
