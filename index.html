@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.2.0";
+const VERSAO_APP = "1.2.1";
 const VERSAO_DATA = "2026-08-24"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -218,6 +218,20 @@ const permissoesDefault = () => ({
   features: { TELA_COMPRAS: true, TELA_CADASTROS: true, TELA_RELATORIOS: true },
   adminDe: { COMPRAS: false, POPS: false },
 });
+
+// Estado agregado (vazio | parcial | completo) de um Subsistema/Grupo no checklist de permissões —
+// "completo" só quando ele e tudo abaixo dele estão liberados; "parcial" quando só uma parte está.
+// Usado pelo checkbox de 3 estados (vazio/"/" parcial/"✓" completo) em Configurações → Usuários.
+const estadoSubsistema = (perm, s) => {
+  if (!s || !perm.subsistemas[s.id]) return "vazio";
+  if (!s.features || s.features.length === 0) return "completo";
+  return s.features.every((f) => perm.features[f.id] !== false) ? "completo" : "parcial";
+};
+const estadoGrupo = (perm, g) => {
+  if (!g || !perm.grupos[g.id]) return "vazio";
+  if (!g.subsistemas || g.subsistemas.length === 0) return "completo";
+  return g.subsistemas.every((s) => estadoSubsistema(perm, s) === "completo") ? "completo" : "parcial";
+};
 
 const EH_GM = (u) => !!u && u.perfil === "GM";
 const EH_ADMIN_SUBSISTEMA = (u) => !!u && u.perfil === "Administrador Subsistema";
@@ -359,6 +373,23 @@ const inputStyle = {
 
 const Cartao = ({ children, style }) => (
   <div style={{ background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 10, padding: 20, ...style }}>{children}</div>
+);
+
+// Checkbox de 3 estados para o checklist de Grupo/Subsistema em Configurações → Usuários:
+// vazio (nada liberado) | parcial "/" (só uma parte das telas abaixo está liberada, mas o
+// Grupo/Subsistema já é acessível) | completo "✓" (ele e tudo abaixo está liberado).
+const CheckboxTriEstado = ({ estado, onChange, tamanho = 15 }) => (
+  <span role="checkbox" aria-checked={estado === "completo" ? "true" : estado === "parcial" ? "mixed" : "false"}
+    onClick={onChange}
+    style={{
+      display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "0 0 auto",
+      width: tamanho, height: tamanho, borderRadius: 3, cursor: "pointer", boxSizing: "border-box",
+      border: `1.5px solid ${estado === "vazio" ? CORES.cinza : CORES.laranja}`,
+      background: estado === "vazio" ? "#fff" : CORES.laranja,
+      color: "#fff", fontSize: tamanho * 0.72, fontWeight: 800, lineHeight: 1, userSelect: "none",
+    }}>
+    {estado === "completo" ? "✓" : estado === "parcial" ? "/" : ""}
+  </span>
 );
 
 /* ---------------- Modal de e-mails simulados ---------------- */
@@ -1967,11 +1998,56 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
   // Checklist de permissões (Grupos/Subsistemas/Funcionalidades) — só GM edita.
   // Sem acesso ao Grupo/Subsistema: fica visível porém desabilitado para o usuário.
   // Dentro de um Subsistema já acessível: funcionalidades sem permissão ficam ocultas.
+  // Checklist com cascata: marcar uma tela (feature) libera automaticamente o Subsistema e o Grupo
+  // dela (senão a tela liberada fica inacessível, escondida atrás de um Grupo/Subsistema bloqueado).
+  // Marcar o Subsistema ou o Grupo direto com "✓" libera tudo abaixo; clicar de novo (já completo)
+  // bloqueia tudo abaixo. "adminDe" não tem cascata — é independente da árvore de acesso.
   const alternarPermissao = async (email, categoria, id) => {
     const u = dados.usuarios[email];
     const atuais = u.permissoes || permissoesDefault();
-    const novoValor = !(atuais[categoria][id] !== false);
-    const permissoes = { ...atuais, [categoria]: { ...atuais[categoria], [id]: novoValor } };
+
+    if (categoria === "adminDe") {
+      const adminDeAtual = atuais.adminDe || permissoesDefault().adminDe;
+      const novoValor = !adminDeAtual[id];
+      const permissoes = { ...atuais, adminDe: { ...adminDeAtual, [id]: novoValor } };
+      let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
+      nd = comLog(nd, usuario, "Usuários", `Alterou administração do subsistema (${id}) para "${novoValor ? "Concedida" : "Removida"}"`, email, email);
+      setDados(nd); await salvarDados(nd);
+      return;
+    }
+
+    const grupos = { ...atuais.grupos };
+    const subsistemas = { ...atuais.subsistemas };
+    const features = { ...atuais.features };
+    let novoValor;
+
+    if (categoria === "features") {
+      novoValor = !(features[id] !== false);
+      features[id] = novoValor;
+      if (novoValor) {
+        const g = CATALOGO_GRUPOS.find((gr) => gr.subsistemas.some((s) => s.features.some((f) => f.id === id)));
+        const s = g && g.subsistemas.find((s) => s.features.some((f) => f.id === id));
+        if (s) subsistemas[s.id] = true;
+        if (g) grupos[g.id] = true;
+      }
+    } else if (categoria === "subsistemas") {
+      const g = CATALOGO_GRUPOS.find((gr) => gr.subsistemas.some((s) => s.id === id));
+      const s = g && g.subsistemas.find((sub) => sub.id === id);
+      novoValor = estadoSubsistema(atuais, s) !== "completo";
+      subsistemas[id] = novoValor;
+      if (s) s.features.forEach((f) => { features[f.id] = novoValor; });
+      if (novoValor && g) grupos[g.id] = true;
+    } else if (categoria === "grupos") {
+      const g = CATALOGO_GRUPOS.find((gr) => gr.id === id);
+      novoValor = estadoGrupo(atuais, g) !== "completo";
+      grupos[id] = novoValor;
+      if (g) g.subsistemas.forEach((s) => {
+        subsistemas[s.id] = novoValor;
+        s.features.forEach((f) => { features[f.id] = novoValor; });
+      });
+    }
+
+    const permissoes = { ...atuais, grupos, subsistemas, features };
     let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
     nd = comLog(nd, usuario, "Usuários", `Alterou permissão (${categoria}/${id}) para "${novoValor ? "Liberado" : "Bloqueado"}"`, email, email);
     setDados(nd); await salvarDados(nd);
@@ -2121,18 +2197,16 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                       <div style={{ marginTop: 6, background: CORES.cinzaClaro, borderRadius: 6, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
                         {CATALOGO_GRUPOS.map((g) => (
                           <div key={g.id}>
-                            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, fontWeight: 700, cursor: "pointer" }}>
-                              <input type="checkbox" checked={!!perm.grupos[g.id]} onChange={() => alternarPermissao(email, "grupos", g.id)}
-                                style={{ width: 15, height: 15, accentColor: CORES.laranja }} />
+                            <label onClick={() => alternarPermissao(email, "grupos", g.id)} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, fontWeight: 700, cursor: "pointer" }}>
+                              <CheckboxTriEstado estado={estadoGrupo(perm, g)} />
                               {g.nome}
                             </label>
                             {g.subsistemas.length > 0 && (
                               <div style={{ marginLeft: 24, marginTop: 4, display: "flex", flexDirection: "column", gap: 4 }}>
                                 {g.subsistemas.map((s) => (
                                   <div key={s.id}>
-                                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
-                                      <input type="checkbox" checked={!!perm.subsistemas[s.id]} onChange={() => alternarPermissao(email, "subsistemas", s.id)}
-                                        style={{ width: 14, height: 14, accentColor: CORES.laranja }} />
+                                    <label onClick={() => alternarPermissao(email, "subsistemas", s.id)} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
+                                      <CheckboxTriEstado estado={estadoSubsistema(perm, s)} tamanho={14} />
                                       {s.nome}{s.externo ? " ↗" : ""}
                                     </label>
                                     {s.features.length > 0 && (
@@ -2258,9 +2332,8 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                         const sub = CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).find((s) => s.id === subId) || { features: [] };
                         return (
                           <td key={subId} style={{ ...td, minWidth: 170 }}>
-                            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, fontWeight: 700, cursor: "pointer" }}>
-                              <input type="checkbox" checked={!!perm.subsistemas[subId]} onChange={() => alternarPermissao(email, "subsistemas", subId)}
-                                style={{ width: 15, height: 15, accentColor: CORES.laranja }} />
+                            <label onClick={() => alternarPermissao(email, "subsistemas", subId)} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, fontWeight: 700, cursor: "pointer" }}>
+                              <CheckboxTriEstado estado={estadoSubsistema(perm, sub)} />
                               Acesso liberado
                             </label>
                             {perm.subsistemas[subId] && sub.features.length > 0 && (
