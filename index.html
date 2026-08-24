@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.2.1";
+const VERSAO_APP = "1.2.2";
 const VERSAO_DATA = "2026-08-24"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -547,6 +547,35 @@ const rotuloStatusCompra = (c) => {
 };
 
 const linhaVazia = () => ({ codigo: "", descricao: "", quantidade: "", unidade: "", centroCusto: "", contaContabil: "", capex: false, nomeCapex: "", observacoes: "" });
+
+// Painel — primeira tela ao entrar no Subsistema (antes de escolher Compras/Cadastros/Relatórios),
+// com indicadores gerais. Mesmo padrão visual de cartão usado na Home do portal.
+function TelaPainelCompras({ dados }) {
+  const compras = dados.compras || [];
+  const cadastros = dados.cadastros || [];
+  const todos = [...compras, ...cadastros];
+  const cartoes = [
+    { rotulo: "Total de Solicitações", valor: todos.length, cor: CORES.azul },
+    { rotulo: "Pendentes", valor: todos.filter((c) => !c.concluido && !c.cancelado).length, cor: CORES.laranja },
+    { rotulo: "Concluídas", valor: todos.filter((c) => c.concluido).length, cor: "#0f6b3f" },
+    { rotulo: "Canceladas", valor: todos.filter((c) => c.cancelado).length, cor: "#9d174d" },
+    { rotulo: "Itens Aguardando Retirada", valor: compras.filter((c) => c.entregue && !c.recebido).length, cor: "#b45309" },
+  ];
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Painel</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 20px" }}>Visão geral de Compras e Cadastros.</p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
+        {cartoes.map((c) => (
+          <div key={c.rotulo} style={{ background: "#fff", border: `1px solid ${CORES.cinzaClaro}`, borderRadius: 10, padding: "18px 16px", borderTop: `4px solid ${c.cor}` }}>
+            <div style={{ fontSize: 30, fontWeight: 800, color: c.cor }}>{c.valor}</div>
+            <div style={{ fontSize: 12, color: CORES.cinza, textTransform: "uppercase", letterSpacing: ".04em", marginTop: 4 }}>{c.rotulo}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
   const [linhas, setLinhas] = useState([linhaVazia()]);
@@ -2962,13 +2991,12 @@ const SISTEMAS_POR_GRUPO = {
 };
 const TITULOS_GRUPO = { ADMIN: "🗂️ Administrativo", SEG: "🦺 Segurança", OPER: "🏭 Operação" };
 
-function SegundoMenuGrupo({ grupoId, aoEscolher, aoVoltarPortal, permissoesUsuario, ehGM }) {
+function SegundoMenuGrupo({ grupoId, aoEscolher, permissoesUsuario, ehGM }) {
   const sistemas = SISTEMAS_POR_GRUPO[grupoId] || [];
   return (
     <div>
-      <button type="button" onClick={aoVoltarPortal} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>
-        ← Portal AURA 360°
-      </button>
+      {/* Sem botão de voltar aqui — a navegação de volta fica só na trilha (breadcrumb), abaixo do
+          cabeçalho "Portal Integrado Da Planta", como em todas as outras telas. */}
       <h1 style={{ color: CORES.azul, margin: "6px 0 4px", fontSize: 24 }}>{TITULOS_GRUPO[grupoId] || grupoId}</h1>
       <p style={{ color: CORES.cinza, fontSize: 14, margin: "0 0 22px" }}>Selecione o sistema que deseja abrir.</p>
       {sistemas.length === 0 ? (
@@ -3294,7 +3322,9 @@ function App() {
     { id: "RESPONSAVEIS", rotulo: "Administradores Responsáveis", icone: "👤" },
   ];
   const souAdminDeCompras = ehGM || subsistemasQueAdministroApp.includes("COMPRAS");
-  const itensAdmin = [...MENU_VISIVEL, ...(souAdminDeCompras ? MENU_ADMIN_COMPRAS : [])];
+  // Painel é a primeira tela do Subsistema (antes de Solicitação de Compras/Cadastros/Relatórios) —
+  // sempre visível a quem acessa o Subsistema, sem depender do checklist de funcionalidades.
+  const itensAdmin = [{ id: "PAINEL", rotulo: "Painel", icone: "📊" }, ...MENU_VISIVEL, ...(souAdminDeCompras ? MENU_ADMIN_COMPRAS : [])];
   // Telas que devem ocupar a tela toda (sem a faixa de 80vw central, com apenas uma margem fina):
   // o sistema de Compras e Cadastros, Configurações e qualquer subsistema externo já aberto embutido —
   // todos têm navegação própria (sidebar, abas ou app completo) e ganham mais espaço útil sem a
@@ -3309,7 +3339,7 @@ function App() {
   };
 
   // Trilha de navegação (breadcrumb) — reflete onde o usuário está dentro do portal
-  const ROTULOS_TELA_ADMIN = { MENU: "Solicitação de Compras", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios", MATERIAIS: "Materiais", REGISTROS: "Registros (Auditoria)", RESPONSAVEIS: "Administradores Responsáveis" };
+  const ROTULOS_TELA_ADMIN = { MENU: "Painel", PAINEL: "Painel", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios", MATERIAIS: "Materiais", REGISTROS: "Registros (Auditoria)", RESPONSAVEIS: "Administradores Responsáveis" };
   const ROTULOS_ABA_CONFIG = { usuarios: "Usuários", registros: "Registros (Auditoria)", sobre: "Sobre" };
   const irParaHome = () => { setArea(null); setTela("MENU"); setAppAdmin(null); setSistemaEmbutido(null); };
   const trilha = (() => {
@@ -3378,14 +3408,14 @@ function App() {
 
         {/* Área 1 — Administrativo: segundo menu (escolha do sistema) → sistema de Compras (sidebar, padrão do app de POPs) */}
         {area === "ADMIN" && appAdmin === null && (
-          <SegundoMenuGrupo grupoId="ADMIN" aoEscolher={(s) => (s.externo ? abrirSistemaExterno(s) : setAppAdmin(s.id))} aoVoltarPortal={irParaHome} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
+          <SegundoMenuGrupo grupoId="ADMIN" aoEscolher={(s) => { if (s.externo) { abrirSistemaExterno(s); return; } setAppAdmin(s.id); setTela("MENU"); }} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
         )}
         {area === "ADMIN" && appAdmin === "COMPRAS" && (
           <div style={{ display: "grid", gridTemplateColumns: (typeof window !== "undefined" && window.innerWidth < 800) ? "1fr" : "232px 1fr", gap: 20, alignItems: "start" }}>
-            <SidebarAdministrativo itens={itensAdmin} telaAtual={tela === "MENU" ? "COMPRAS" : tela} aoNavegar={(id) => setTela(id)} aoVoltarPortal={() => setAppAdmin(null)} />
+            <SidebarAdministrativo itens={itensAdmin} telaAtual={tela === "MENU" ? "PAINEL" : tela} aoNavegar={(id) => setTela(id)} aoVoltarPortal={() => setAppAdmin(null)} />
 
             <div style={{ minWidth: 0 }}>
-              {tela === "MENU" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
+              {(tela === "MENU" || tela === "PAINEL") && <TelaPainelCompras dados={dados} />}
               {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "RELATORIOS" && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
@@ -3404,7 +3434,7 @@ function App() {
             style={{ width: "100%", height: "calc(100vh - 100px)", border: "none", display: "block" }} />
         )}
         {area === "SEG" && !sistemaEmbutido && (
-          <SegundoMenuGrupo grupoId="SEG" aoEscolher={abrirSistemaExterno} aoVoltarPortal={irParaHome} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
+          <SegundoMenuGrupo grupoId="SEG" aoEscolher={abrirSistemaExterno} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
         )}
 
         {/* Área 3 — Operação (em desenvolvimento) */}
@@ -3413,12 +3443,7 @@ function App() {
         {/* Configurações — administração do AURA 360° Planta como um todo (usuários, permissões,
             auditoria e versão); nível global, fora de qualquer Grupo/Subsistema. Só GM acessa. */}
         {area === "CONFIG" && (
-          <div>
-            <button type="button" onClick={irParaHome} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13.5, cursor: "pointer", marginBottom: 14, padding: 0, fontFamily: "inherit" }}>
-              ← Portal AURA 360°
-            </button>
-            <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} aba={configAba} setAba={setConfigAba} />
-          </div>
+          <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} aba={configAba} setAba={setConfigAba} />
         )}
       </main>
 
