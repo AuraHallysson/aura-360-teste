@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.2.2";
+const VERSAO_APP = "1.3.0";
 const VERSAO_DATA = "2026-08-24"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -113,6 +113,18 @@ const MATERIAIS_INICIAIS = [
   { codigo: "104521", descricao: "OLEO HIDRAULICO ISO VG 68 TAMBOR 200L", unidade: "TB" },
   { codigo: "105090", descricao: "TELA DE PENEIRAMENTO 12MM 1500X2000", unidade: "UN" },
 ];
+
+// Ambiente de Testes: dados fictícios (nunca o acervo real da planta — esse fica só em Homologação).
+const AREAS_POPS_INICIAIS = [
+  { id: 1, numero: 1, nome: "Área de Teste 1", pastaNorm: "01 - Área de Teste 1" },
+  { id: 2, numero: 2, nome: "Área de Teste 2", pastaNorm: "02 - Área de Teste 2" },
+];
+const POPS_INICIAIS = [
+  { id: 1, codigo: "POP-TESTE-001", titulo: "Procedimento de exemplo 1", area: "01 - Área de Teste 1", status: "PUBLICADO", revisaoAtual: 1, dataRevisao: "01/06/2026", dataRevisaoIso: "2026-06-01", validade: "2027-06-01", singularUpload: false, criadoEm: "2026-08-18T18:20:38.919Z", historico: [{ rev: 0, data: "01/01/2025", descricao: "Inicial" }, { rev: 1, data: "01/06/2026", descricao: "Revisão de exemplo" }] },
+  { id: 2, codigo: "POP-TESTE-002", titulo: "Procedimento de exemplo 2", area: "02 - Área de Teste 2", status: "CONCLUIDO", revisaoAtual: 0, dataRevisao: "01/02/2025", dataRevisaoIso: "2025-02-01", validade: "2026-02-01", singularUpload: true, criadoEm: "2026-08-18T18:20:39.132Z", historico: [{ rev: 0, data: "01/02/2025", descricao: "Inicial" }] },
+  { id: 3, codigo: "POP-TESTE-003", titulo: "Procedimento de exemplo 3", area: "01 - Área de Teste 1", status: "PUBLICADO", revisaoAtual: 0, dataRevisao: "01/01/2025", dataRevisaoIso: "2025-01-01", validade: "2026-01-01", singularUpload: false, criadoEm: "2026-08-18T18:20:39.174Z", historico: [{ rev: 0, data: "01/01/2025", descricao: "Inicial" }] },
+];
+const POPS_CONFIG_INICIAL = { validadeDias: 365, alertasDias: [60, 45, 30, 15], pendenteRevisaoDias: 45 };
 
 const nomeDoEmail = (email) =>
   email
@@ -201,8 +213,15 @@ const CATALOGO_GRUPOS = [
   {
     id: "SEG", nome: "Segurança",
     subsistemas: [
-      // Sistema externo (app próprio, login próprio) — atalho temporário até o SSO (Entra ID) existir
-      { id: "POPS", nome: "Gestão de Procedimentos", externo: true, url: "", features: [] },
+      // Nativo do AURA 360° (portado do antigo app separado aura-pops em 2026-08-24 — deixou de
+      // depender de um servidor externo, que ficava fora do ar entre sessões).
+      { id: "POPS", nome: "Gestão de Procedimentos", externo: false,
+        features: [
+          { id: "TELA_POPS_PROCEDIMENTOS", nome: "Procedimentos" },
+          { id: "TELA_POPS_SSMA", nome: "SSMA" },
+          { id: "TELA_POPS_LISTA_MESTRA", nome: "Lista Mestra" },
+        ],
+      },
     ],
   },
   { id: "OPER", nome: "Operação", subsistemas: [] },
@@ -215,8 +234,12 @@ const CATALOGO_GRUPOS = [
 const permissoesDefault = () => ({
   grupos: { ADMIN: true, SEG: false, OPER: false },
   subsistemas: { COMPRAS: true, POPS: false },
-  features: { TELA_COMPRAS: true, TELA_CADASTROS: true, TELA_RELATORIOS: true },
+  features: { TELA_COMPRAS: true, TELA_CADASTROS: true, TELA_RELATORIOS: true, TELA_POPS_PROCEDIMENTOS: true, TELA_POPS_SSMA: true, TELA_POPS_LISTA_MESTRA: true },
   adminDe: { COMPRAS: false, POPS: false },
+  // Papéis operacionais dentro de Gestão de Procedimentos (Auditor revisa, Avaliador aprova a
+  // revisão, SSMA aprova/conclui) — independentes de perfil/adminDe; só têm efeito para quem já
+  // acessa o Subsistema POPS. Igual ao GM: ehGM sempre tem os 3 papéis, sem precisar marcar.
+  papeisPops: { auditor: false, avaliador: false, ssma: false },
 });
 
 // Estado agregado (vazio | parcial | completo) de um Subsistema/Grupo no checklist de permissões —
@@ -235,6 +258,8 @@ const estadoGrupo = (perm, g) => {
 
 const EH_GM = (u) => !!u && u.perfil === "GM";
 const EH_ADMIN_SUBSISTEMA = (u) => !!u && u.perfil === "Administrador Subsistema";
+// Papel operacional dentro de Gestão de Procedimentos (auditor/avaliador/ssma) — GM sempre tem todos.
+const temPapelPops = (u, papel) => EH_GM(u) || !!(u && u.permissoes && u.permissoes.papeisPops && u.permissoes.papeisPops[papel]);
 // Subsistemas que este usuário administra por delegação do GM (lista de ids); vazio para
 // qualquer perfil que não seja "Administrador Subsistema" — GM não precisa disso, já tem acesso total.
 const subsistemasAdministradosPor = (u) => {
@@ -245,7 +270,7 @@ const subsistemasAdministradosPor = (u) => {
 // Categorias da trilha de auditoria (SOX) pertencentes a cada Subsistema nativo — usado para
 // restringir o que um administrador de Subsistema vê em Registros (essa visão fica dentro do
 // próprio Subsistema, ex.: Administrativo → Compras e Cadastros → Registros).
-const CATEGORIAS_POR_SUBSISTEMA = { COMPRAS: ["Compra", "Cadastro", "Movimentação", "Materiais"], POPS: [] };
+const CATEGORIAS_POR_SUBSISTEMA = { COMPRAS: ["Compra", "Cadastro", "Movimentação", "Materiais"], POPS: ["Procedimentos"] };
 // Categorias de plataforma (todo o AURA 360° Planta, não de um Subsistema específico): login/acesso
 // e gestão de usuários. É só isso que aparece em Configurações → Registros (visão do GM) — a
 // auditoria de um Subsistema só aparece se a pessoa abrir aquele Subsistema.
@@ -259,6 +284,10 @@ function migrarUsuarios(usuarios) {
     const perfil = u.perfil === "Administrador" ? "GM" : u.perfil;
     const permissoes = { ...permissoesDefault(), ...(u.permissoes || {}) };
     if (!permissoes.adminDe) permissoes.adminDe = permissoesDefault().adminDe;
+    if (!permissoes.papeisPops) permissoes.papeisPops = permissoesDefault().papeisPops;
+    if (permissoes.features.TELA_POPS_PROCEDIMENTOS === undefined) {
+      permissoes.features = { ...permissoesDefault().features, ...permissoes.features };
+    }
     out[email] = { ativo: true, ...u, perfil, permissoes };
   }
   return out;
@@ -271,13 +300,16 @@ const dadosVazios = () => ({
   materiais: MATERIAIS_INICIAIS,
   materiaisAtualizadoEm: null,
   auditoria: [], // trilha de auditoria (SOX): registros imutáveis, append-only
+  pops: POPS_INICIAIS,
+  popsAreas: AREAS_POPS_INICIAIS,
+  popsConfig: POPS_CONFIG_INICIAL,
 });
 
 /* ---------------- Trilha de auditoria (SOX) ----------------
    Registro imutável de TODAS as movimentações (quem, o quê, quando).
    Os registros são apenas ANEXADOS (nunca editados/removidos pela aplicação).
    Categorias: Compra | Cadastro | Movimentação | Materiais | Usuários | Acesso  */
-const LOG_CATEGORIAS = ["Compra", "Cadastro", "Movimentação", "Materiais", "Usuários", "Acesso"];
+const LOG_CATEGORIAS = ["Compra", "Cadastro", "Movimentação", "Materiais", "Procedimentos", "Usuários", "Acesso"];
 function novoLog(usuario, categoria, acao, detalhe, refId) {
   const agora = new Date();
   return {
@@ -308,6 +340,10 @@ async function carregarDados() {
       if (!d.usuarios[PRIMEIRO_ADMIN]) d.usuarios[PRIMEIRO_ADMIN] = { nome: nomeDoEmail(PRIMEIRO_ADMIN), perfil: "GM" };
       else d.usuarios[PRIMEIRO_ADMIN].perfil = "GM";
       if (!Array.isArray(d.auditoria)) d.auditoria = []; // migração: bases antigas sem trilha
+      // Migração única do acervo do antigo app aura-pops (2026-08-24) — só entra se ainda não existir.
+      if (!Array.isArray(d.pops)) d.pops = POPS_INICIAIS;
+      if (!Array.isArray(d.popsAreas)) d.popsAreas = AREAS_POPS_INICIAIS;
+      if (!d.popsConfig) d.popsConfig = POPS_CONFIG_INICIAL;
       return d;
     }
   } catch (e) { /* chave inexistente */ }
@@ -573,6 +609,530 @@ function TelaPainelCompras({ dados }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   Gestão de Procedimentos (POPs) — Subsistema de Segurança
+   Portado do antigo app separado "aura-pops" (2026-08-24) para dentro do AURA 360° Planta: mesmo
+   login, mesmos dados (localStorage/SharePoint), sem depender de nenhum servidor externo.
+   Fluxo: PUBLICADO/CONCLUIDO -[iniciar]-> EM_REVISAO -[enviar avaliação]-> AGUARDANDO_AVALIACAO
+   -[aprova]-> APROVADO -[confirma]-> AGUARDANDO_APROVACAO_SSMA -[SSMA conclui]-> CONCLUIDO.
+   Reprovações (avaliador ou SSMA) devolvem para EM_REVISAO. Regra SOX: avaliador ≠ auditor da revisão.
+   ============================================================ */
+const STATUS_POPS = { PUBLICADO: "Publicado", EM_REVISAO: "Em Revisão", AGUARDANDO_AVALIACAO: "Aguardando Avaliação", APROVADO: "Aprovado", AGUARDANDO_APROVACAO_SSMA: "Aguardando Aprovação do SSMA", CONCLUIDO: "Concluído" };
+const COR_STATUS_POPS = { PUBLICADO: "#2D3D70", EM_REVISAO: "#F4614D", AGUARDANDO_AVALIACAO: "#b8860b", APROVADO: "#7C93C7", AGUARDANDO_APROVACAO_SSMA: "#E8862E", CONCLUIDO: "#22305c" };
+function popsHojeBR() { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`; }
+function popsHojeIso() { return new Date().toISOString().slice(0, 10); }
+function popsAddDias(iso, dias) { return new Date(new Date(iso).getTime() + dias * 86400000).toISOString().slice(0, 10); }
+function popsDiasParaVencer(validade) { return validade ? Math.ceil((new Date(validade) - new Date(popsHojeIso())) / 86400000) : null; }
+const tdPops = { padding: "8px 10px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 13, color: CORES.azul, verticalAlign: "top" };
+
+// Gráficos simples em SVG (sem biblioteca externa) — donut e barras, usados no Painel
+function DonutPops({ dados: itens, size = 150 }) {
+  const total = itens.reduce((s, d) => s + d.v, 0) || 1;
+  const R = size / 2, r = R * 0.62; let a0 = -Math.PI / 2; const cx = R, cy = R;
+  const paths = [];
+  itens.forEach((d, i) => {
+    if (!d.v) return;
+    const a1 = a0 + (d.v / total) * Math.PI * 2;
+    const large = (a1 - a0) > Math.PI ? 1 : 0;
+    const x0 = cx + R * Math.cos(a0), y0 = cy + R * Math.sin(a0), x1 = cx + R * Math.cos(a1), y1 = cy + R * Math.sin(a1);
+    const xi1 = cx + r * Math.cos(a1), yi1 = cy + r * Math.sin(a1), xi0 = cx + r * Math.cos(a0), yi0 = cy + r * Math.sin(a0);
+    paths.push(<path key={i} d={`M${x0} ${y0} A${R} ${R} 0 ${large} 1 ${x1} ${y1} L${xi1} ${yi1} A${r} ${r} 0 ${large} 0 ${xi0} ${yi0} Z`} fill={d.c} />);
+    a0 = a1;
+  });
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      {paths}
+      <text x={cx} y={cy - 2} textAnchor="middle" fontSize={26} fontWeight={800} fill="#333">{total}</text>
+      <text x={cx} y={cy + 16} textAnchor="middle" fontSize={10} fill="#888">POPs</text>
+    </svg>
+  );
+}
+function BarsPops({ dados: itens, w = 360, h = 150 }) {
+  const max = Math.max(1, ...itens.map((d) => d.v));
+  const bw = (w - 20) / (itens.length || 1);
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
+      {itens.map((d, i) => {
+        const bh = (d.v / max) * (h - 40); const x = 10 + i * bw; const y = h - 24 - bh;
+        return (
+          <g key={i}>
+            <rect x={x + 6} y={y} width={bw - 12} height={bh} rx={4} fill={d.c || CORES.azul} />
+            <text x={x + bw / 2} y={y - 4} textAnchor="middle" fontSize={11} fontWeight={700} fill="#444">{d.v}</text>
+            <text x={x + bw / 2} y={h - 8} textAnchor="middle" fontSize={10} fill="#777">{d.l}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function TelaPainelPops({ dados }) {
+  const pops = dados.pops || [];
+  const cfg = dados.popsConfig || POPS_CONFIG_INICIAL;
+  const porStatus = {};
+  pops.forEach((p) => { porStatus[p.status] = (porStatus[p.status] || 0) + 1; });
+  const hoje = new Date(popsHojeIso());
+  const validade = { vencidos: 0, ate15: 0, ate30: 0, ate60: 0, ok: 0, semData: 0 };
+  pops.forEach((p) => {
+    if (!p.validade) { validade.semData++; return; }
+    const d = Math.ceil((new Date(p.validade) - hoje) / 86400000);
+    if (d < 0) validade.vencidos++; else if (d <= 15) validade.ate15++; else if (d <= 30) validade.ate30++; else if (d <= 60) validade.ate60++; else validade.ok++;
+  });
+  const pendSingular = pops.filter((p) => !p.singularUpload).length;
+  const porArea = (dados.popsAreas || []).map((a) => ({ l: a.pastaNorm.replace(/^\d+\s*-\s*/, ""), v: pops.filter((p) => p.area === a.pastaNorm).length }));
+  const pendenteDias = cfg.pendenteRevisaoDias || 45;
+  let ok = 0, pendente = 0, vencido = 0, semDataRev = 0;
+  pops.forEach((p) => {
+    if (!p.validade) { semDataRev++; return; }
+    const dd = Math.ceil((new Date(p.validade) - hoje) / 86400000);
+    if (dd < 0) vencido++; else if (dd <= pendenteDias) pendente++; else ok++;
+  });
+  const total = pops.length;
+  const pct = (n) => (total ? Math.round((n / total) * 100) : 0);
+  const statusData = Object.keys(STATUS_POPS).map((k) => ({ l: STATUS_POPS[k], v: porStatus[k] || 0, c: COR_STATUS_POPS[k] }));
+  const validadeData = [
+    { l: "Vencidos", v: validade.vencidos, c: "#990000" }, { l: "≤15d", v: validade.ate15, c: "#F4614D" },
+    { l: "≤30d", v: validade.ate30, c: "#FFD700" }, { l: "≤60d", v: validade.ate60, c: "#A9B7CE" }, { l: "OK", v: validade.ok, c: CORES.azul },
+  ];
+  const cartoes = [
+    { rotulo: "Total de POPs", valor: total, cor: CORES.azul },
+    { rotulo: "Vencidos", valor: validade.vencidos, cor: validade.vencidos ? "#990000" : "#0f6b3f" },
+    { rotulo: "A vencer (≤60d)", valor: validade.ate15 + validade.ate30 + validade.ate60, cor: (validade.ate15 + validade.ate30) ? CORES.laranja : CORES.azul },
+    { rotulo: "Pendentes no Singular", valor: pendSingular, cor: pendSingular ? CORES.laranja : "#0f6b3f" },
+  ];
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Painel</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 20px" }}>Visão geral do acervo de POPs e pendências.</p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
+        {cartoes.map((c) => (
+          <div key={c.rotulo} style={{ background: "#fff", border: `1px solid ${CORES.cinzaClaro}`, borderRadius: 10, padding: "18px 16px", borderTop: `4px solid ${c.cor}` }}>
+            <div style={{ fontSize: 30, fontWeight: 800, color: c.cor }}>{c.valor}</div>
+            <div style={{ fontSize: 12, color: CORES.cinza, textTransform: "uppercase", letterSpacing: ".04em", marginTop: 4 }}>{c.rotulo}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: (typeof window !== "undefined" && window.innerWidth < 800) ? "1fr" : "1fr 1fr", gap: 16, marginTop: 16 }}>
+        <Cartao>
+          <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>POPs por status</h3>
+          <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
+            <DonutPops dados={statusData} />
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, color: CORES.azul }}>
+              {statusData.map((s) => (
+                <span key={s.l}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 9, background: s.c, marginRight: 6 }} />{s.l} <b>{s.v}</b></span>
+              ))}
+            </div>
+          </div>
+        </Cartao>
+        <Cartao>
+          <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>Validade dos POPs</h3>
+          <BarsPops dados={validadeData} w={380} h={170} />
+          <p style={{ fontSize: 11.5, color: CORES.cinza, marginTop: 6 }}>Alertas por e-mail em {(cfg.alertasDias || [60, 45, 30, 15]).join("/")} dias antes do vencimento (protótipo — envio real depende da TI habilitar e-mail corporativo).</p>
+        </Cartao>
+      </div>
+      <Cartao style={{ marginTop: 16 }}>
+        <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>Situação de revisão (% do geral)</h3>
+        <div style={{ display: "flex", gap: 28, alignItems: "center", flexWrap: "wrap" }}>
+          <DonutPops dados={[
+            { l: "OK", v: ok, c: CORES.azul }, { l: "Pendente", v: pendente, c: CORES.laranja },
+            { l: "Vencido", v: vencido, c: "#990000" }, { l: "Sem data", v: semDataRev, c: "#A9B7CE" },
+          ]} />
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
+              <div><div style={{ fontSize: 22, fontWeight: 800, color: CORES.azul }}>{pct(ok)}%</div><div style={{ fontSize: 11, color: CORES.cinza }}>Revisado e válido</div></div>
+              <div><div style={{ fontSize: 22, fontWeight: 800, color: CORES.laranja }}>{pct(pendente)}%</div><div style={{ fontSize: 11, color: CORES.cinza }}>Pendente de revisão (≤{pendenteDias}d)</div></div>
+              <div><div style={{ fontSize: 22, fontWeight: 800, color: "#990000" }}>{pct(vencido)}%</div><div style={{ fontSize: 11, color: CORES.cinza }}>Vencido</div></div>
+            </div>
+            <p style={{ fontSize: 11.5, color: CORES.cinza, marginTop: 10 }}>Validade = data da última revisão + {cfg.validadeDias || 365} dias. Revisado e válido = mais de {pendenteDias} dias para vencer. Pendente de revisão = faltam ≤ {pendenteDias} dias. Vencido = validade expirada.</p>
+          </div>
+        </div>
+      </Cartao>
+      <Cartao style={{ marginTop: 16 }}>
+        <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>POPs por área</h3>
+        <BarsPops dados={porArea.map((a) => ({ l: a.l, v: a.v, c: CORES.azul }))} w={720} h={170} />
+      </Cartao>
+    </div>
+  );
+}
+
+// Modal de detalhe/workflow de um POP — ações condicionadas ao papel do usuário (Auditor/Avaliador/SSMA)
+function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) {
+  const [modoObs, setModoObs] = useState(null); // null | "reprovar" | "confirmar"
+  const [textoObs, setTextoObs] = useState("");
+  const [avaliadorEsc, setAvaliadorEsc] = useState("");
+
+  const meAuditor = temPapelPops(usuario, "auditor");
+  const meSSMA = temPapelPops(usuario, "ssma");
+  const souAuditorResp = !pop.auditorEmail || pop.auditorEmail === usuario.email;
+  const souAvaliadorDesignado = pop.avaliadorEmail === usuario.email;
+  const avaliadores = Object.entries(dados.usuarios)
+    .filter(([email, u]) => u.ativo !== false && (EH_GM(u) || (u.permissoes && u.permissoes.papeisPops && u.permissoes.papeisPops.avaliador)))
+    .filter(([email]) => email !== (pop.auditorEmail || usuario.email));
+
+  const rodar = async (fn) => { try { await fn(); } catch (e) { avisar(e.message || String(e)); } };
+
+  const iniciar = () => rodar(() => atualizarPop(pop.id, {
+    statusAntesRevisao: pop.status, status: "EM_REVISAO", auditorEmail: usuario.email,
+    revisaoEmAndamento: (pop.revisaoAtual || 0) + 1, avaliadorEmail: null, avaliacao: null, descricaoPendente: null,
+    singularUpload: false, singularEm: null, singularPorNome: null, ssmaEnviadoEm: null,
+    trabalhoAnexo: null, trabalhoEnviado: false, trabalhoEnviadoEm: null, bloqueadoEdicao: false, avaliacaoSSMA: null,
+  }, "Iniciou revisão", `${pop.codigo} — Rev ${String((pop.revisaoAtual || 0) + 1).padStart(2, "0")}`).then(aoFechar));
+
+  const assumirRevisao = () => rodar(() => atualizarPop(pop.id, { auditorEmail: usuario.email }, "Assumiu a revisão", pop.codigo).then(aoFechar));
+  const assumirAvaliacao = () => rodar(() => atualizarPop(pop.id, { avaliadorEmail: usuario.email }, "Assumiu a avaliação", pop.codigo).then(aoFechar));
+
+  const cancelarRevisao = () => rodar(() => atualizarPop(pop.id, {
+    status: pop.statusAntesRevisao || "PUBLICADO", statusAntesRevisao: null, auditorEmail: null, avaliadorEmail: null,
+    avaliacao: null, descricaoPendente: null, trabalhoAnexo: null, trabalhoEnviado: false, trabalhoEnviadoEm: null, revisaoEmAndamento: null,
+  }, "Cancelou a revisão", pop.codigo).then(aoFechar));
+
+  const enviarUpload = (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    if (!/\.docx$/i.test(f.name)) { avisar("Envie um arquivo .docx."); return; }
+    const reader = new FileReader();
+    reader.onload = () => rodar(() => atualizarPop(pop.id, {
+      trabalhoAnexo: { nome: f.name, dataUrl: reader.result }, trabalhoEnviado: true, trabalhoEnviadoEm: new Date().toISOString(),
+    }, "Enviou versão revisada (upload)", f.name).then(aoFechar));
+    reader.readAsDataURL(f);
+  };
+
+  const enviarAvaliacao = () => rodar(async () => {
+    if (!avaliadorEsc) { avisar("Selecione um avaliador."); return; }
+    await atualizarPop(pop.id, { status: "AGUARDANDO_AVALIACAO", avaliadorEmail: avaliadorEsc, bloqueadoEdicao: true },
+      "Enviou para avaliação", `${pop.codigo} → ${avaliadorEsc}`);
+    aoFechar();
+  });
+
+  const aprovar = () => rodar(() => atualizarPop(pop.id, { status: "APROVADO", avaliacao: { aprovado: true, obs: "", avaliadorNome: usuario.nome, data: new Date().toISOString() } },
+    "Aprovou a avaliação", pop.codigo).then(aoFechar));
+
+  const reprovar = () => rodar(async () => {
+    if (!textoObs.trim()) { avisar("Justificativa obrigatória ao reprovar."); return; }
+    await atualizarPop(pop.id, {
+      status: "EM_REVISAO", bloqueadoEdicao: false, trabalhoEnviado: false,
+      avaliacao: { aprovado: false, obs: textoObs, avaliadorNome: usuario.nome, data: new Date().toISOString() },
+    }, "Reprovou / solicitou ajustes", textoObs);
+    aoFechar();
+  });
+
+  const confirmar = () => rodar(async () => {
+    if (!textoObs.trim()) { avisar("Descreva as mudanças desta revisão."); return; }
+    await atualizarPop(pop.id, {
+      descricaoPendente: textoObs, status: "AGUARDANDO_APROVACAO_SSMA", bloqueadoEdicao: true,
+      ssmaEnviadoEm: new Date().toISOString(), singularUpload: false, singularEm: null, singularPorNome: null,
+    }, "Confirmou a revisão (enviado ao SSMA)", textoObs);
+    aoFechar();
+  });
+
+  const hist = pop.historico || [];
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(45,61,112,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 16 }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, maxWidth: 680, width: "100%", maxHeight: "88vh", overflowY: "auto", position: "relative" }}>
+        <button type="button" onClick={aoFechar} style={{ position: "absolute", top: 14, right: 16, border: "none", background: "none", fontSize: 20, color: CORES.cinza, cursor: "pointer" }}>×</button>
+        <h3 style={{ margin: "0 0 2px", color: CORES.azul }}>{pop.codigo}</h3>
+        <div style={{ color: CORES.cinza, fontSize: 13 }}>{pop.titulo} · {pop.area}</div>
+        <div style={{ margin: "10px 0" }}>
+          <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 10, fontSize: 12, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[pop.status] || CORES.azul }}>{STATUS_POPS[pop.status] || pop.status}</span>
+          <span style={{ fontSize: 13, color: CORES.azul, marginLeft: 10 }}>Rev <b>{String(pop.revisaoAtual ?? 0).padStart(2, "0")}</b> · {pop.dataRevisao || "—"} · Validade: <b>{pop.validade ? formatarDataBR(pop.validade) : "—"}</b></span>
+        </div>
+
+        {["PUBLICADO", "CONCLUIDO"].includes(pop.status) && meAuditor && <Botao tipo="laranja" onClick={iniciar}>Iniciar revisão</Botao>}
+
+        {pop.status === "EM_REVISAO" && meAuditor && (
+          <div style={{ background: CORES.cinzaClaro, borderRadius: 8, padding: 14, marginTop: 8 }}>
+            {!pop.trabalhoAnexo || !pop.trabalhoEnviado ? (
+              <label style={{ display: "inline-block" }}>
+                <Botao tipo="contorno" style={{ pointerEvents: "none" }}>⬆ Enviar versão revisada (.docx)</Botao>
+                <input type="file" accept=".docx" onChange={enviarUpload} style={{ display: "block", marginTop: 6 }} />
+              </label>
+            ) : (
+              <div style={{ fontSize: 13, color: CORES.azul, marginBottom: 8 }}>✓ Versão revisada enviada: <b>{pop.trabalhoAnexo.nome}</b> em {new Date(pop.trabalhoEnviadoEm).toLocaleString("pt-BR")}
+                {pop.trabalhoAnexo.dataUrl && <> — <a href={pop.trabalhoAnexo.dataUrl} download={pop.trabalhoAnexo.nome}>baixar</a></>}</div>
+            )}
+            {pop.trabalhoEnviado && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
+                <select style={{ ...inputStyle, width: "auto" }} value={avaliadorEsc} onChange={(e) => setAvaliadorEsc(e.target.value)}>
+                  <option value="">Selecione o avaliador…</option>
+                  {avaliadores.map(([email, u]) => <option key={email} value={email}>{u.nome}</option>)}
+                </select>
+                <Botao onClick={enviarAvaliacao}>Enviar p/ avaliação</Botao>
+              </div>
+            )}
+            {!souAuditorResp && <Botao tipo="contorno" style={{ marginTop: 10 }} onClick={assumirRevisao}>Assumir revisão</Botao>}
+            {souAuditorResp && <Botao tipo="perigo" style={{ marginTop: 10, marginLeft: souAuditorResp ? 0 : 8 }} onClick={cancelarRevisao} title="Use se iniciou a revisão do POP errado.">✕ Cancelar revisão</Botao>}
+          </div>
+        )}
+
+        {pop.status === "AGUARDANDO_AVALIACAO" && (
+          souAvaliadorDesignado ? (
+            modoObs === "reprovar" ? (
+              <div style={{ marginTop: 8 }}>
+                <textarea style={{ ...inputStyle, minHeight: 70 }} placeholder="Descreva os pontos a corrigir (obrigatório)" value={textoObs} onChange={(e) => setTextoObs(e.target.value)} />
+                <div style={{ marginTop: 8, display: "flex", gap: 8 }}><Botao tipo="perigo" onClick={reprovar}>Confirmar reprovação</Botao><Botao tipo="contorno" onClick={() => { setModoObs(null); setTextoObs(""); }}>Cancelar</Botao></div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <Botao onClick={aprovar}>Aprovar</Botao>
+                <Botao tipo="perigo" onClick={() => setModoObs("reprovar")}>Reprovar / ajustes</Botao>
+              </div>
+            )
+          ) : (
+            <div style={{ marginTop: 8 }}>
+              <span style={{ fontSize: 13, color: CORES.cinza }}>Aguardando avaliação{pop.avaliadorEmail ? ` de ${dados.usuarios[pop.avaliadorEmail]?.nome || pop.avaliadorEmail}` : ""}.</span>
+              {temPapelPops(usuario, "avaliador") && !pop.auditorEmail !== usuario.email && (
+                <Botao tipo="contorno" style={{ marginLeft: 10 }} onClick={assumirAvaliacao}>Assumir avaliação</Botao>
+              )}
+            </div>
+          )
+        )}
+
+        {pop.status === "APROVADO" && meAuditor && souAuditorResp && (
+          modoObs === "confirmar" ? (
+            <div style={{ marginTop: 8 }}>
+              <textarea style={{ ...inputStyle, minHeight: 70 }} placeholder="Descreva as mudanças desta revisão (obrigatório para o histórico)" value={textoObs} onChange={(e) => setTextoObs(e.target.value)} />
+              <div style={{ marginTop: 8, display: "flex", gap: 8 }}><Botao onClick={confirmar}>Confirmar</Botao><Botao tipo="contorno" onClick={() => { setModoObs(null); setTextoObs(""); }}>Cancelar</Botao></div>
+            </div>
+          ) : <Botao style={{ marginTop: 8 }} onClick={() => setModoObs("confirmar")}>Confirmar revisão</Botao>
+        )}
+
+        {pop.status === "AGUARDANDO_APROVACAO_SSMA" && (
+          <div style={{ marginTop: 8, fontSize: 13, color: CORES.cinza }}>
+            {meSSMA ? "Ações disponíveis na tela SSMA." : "Aguardando aprovação do SSMA — ações no menu SSMA."}
+          </div>
+        )}
+
+        <h4 style={{ margin: "18px 0 6px", fontSize: 14, color: CORES.azul }}>Histórico de Revisões</h4>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead><tr><th style={tdPops}>Nº</th><th style={tdPops}>Data</th><th style={tdPops}>Descrição</th></tr></thead>
+          <tbody>{hist.length ? hist.map((h, i) => <tr key={i}><td style={tdPops}>{String(h.rev).padStart(2, "0")}</td><td style={tdPops}>{h.data}</td><td style={tdPops}>{h.descricao}</td></tr>) : <tr><td colSpan={3} style={{ ...tdPops, color: CORES.cinza }}>—</td></tr>}</tbody>
+        </table>
+        {pop.avaliacao && !pop.avaliacao.aprovado && (
+          <p style={{ fontSize: 12.5, color: "#990000", marginTop: 10 }}><b>Última reprovação (avaliador):</b> {pop.avaliacao.obs}</p>
+        )}
+        {pop.avaliacaoSSMA && !pop.avaliacaoSSMA.aprovado && (
+          <p style={{ fontSize: 12.5, color: "#990000", marginTop: 6 }}><b>Reprovado pelo SSMA:</b> {pop.avaliacaoSSMA.obs}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TelaProcedimentosPops({ dados, setDados, usuario }) {
+  const [busca, setBusca] = useState("");
+  const [fArea, setFArea] = useState("");
+  const [fStatus, setFStatus] = useState("");
+  const [popAberto, setPopAberto] = useState(null);
+
+  const pops = dados.pops || [];
+  const areas = dados.popsAreas || [];
+  const q = busca.toLowerCase().trim();
+  const lista = pops.filter((p) =>
+    (!q || `${p.codigo} ${p.titulo}`.toLowerCase().includes(q)) &&
+    (!fArea || p.area === fArea) &&
+    (!fStatus || p.status === fStatus));
+  const statusPresentes = [...new Set(pops.map((p) => p.status))];
+
+  const atualizarPop = async (popId, patch, acao, detalhe) => {
+    let nd = { ...dados, pops: dados.pops.map((p) => (p.id === popId ? { ...p, ...patch } : p)) };
+    nd = comLog(nd, usuario, "Procedimentos", acao, detalhe, popId);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  const popSelecionado = popAberto ? pops.find((p) => p.id === popAberto) : null;
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Procedimentos</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 14px" }}>{lista.length} de {pops.length} procedimento(s){lista.length !== pops.length ? " (filtrado)" : ""}.</p>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <input style={{ ...inputStyle, minWidth: 240, width: "auto" }} placeholder="🔎 Buscar por código ou título…" value={busca} onChange={(e) => setBusca(e.target.value)} />
+        <select style={{ ...inputStyle, width: "auto" }} value={fArea} onChange={(e) => setFArea(e.target.value)}>
+          <option value="">Todas as áreas</option>
+          {areas.map((a) => <option key={a.id} value={a.pastaNorm}>{a.pastaNorm}</option>)}
+        </select>
+        <select style={{ ...inputStyle, width: "auto" }} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+          <option value="">Todos os status</option>
+          {statusPresentes.map((s) => <option key={s} value={s}>{STATUS_POPS[s] || s}</option>)}
+        </select>
+        {(busca || fArea || fStatus) && <Botao tipo="contorno" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => { setBusca(""); setFArea(""); setFStatus(""); }}>Limpar filtros</Botao>}
+      </div>
+      <Cartao style={{ padding: 0, overflow: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 760 }}>
+          <thead><tr>
+            {["Código / Área", "Título", "Revisão", "Validade", "Status", ""].map((h) => (
+              <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {lista.map((p) => {
+              const dias = popsDiasParaVencer(p.validade);
+              return (
+                <tr key={p.id}>
+                  <td style={tdPops}><b>{p.codigo}</b><br /><span style={{ color: CORES.cinza, fontSize: 11.5 }}>{p.area}</span></td>
+                  <td style={tdPops}>{p.titulo}</td>
+                  <td style={tdPops}>Rev {String(p.revisaoAtual ?? 0).padStart(2, "0")}<br /><span style={{ color: CORES.cinza, fontSize: 11.5 }}>{p.dataRevisao || "—"}</span></td>
+                  <td style={tdPops}>{p.validade ? <>{formatarDataBR(p.validade)}<br /><span style={{ fontSize: 11, color: dias < 0 || dias <= 30 ? "#990000" : dias <= 60 ? CORES.laranja : "#0f6b3f" }}>{dias < 0 ? "vencido" : dias + "d"}</span></> : "—"}</td>
+                  <td style={tdPops}><span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[p.status] || CORES.azul }}>{STATUS_POPS[p.status] || p.status}</span></td>
+                  <td style={tdPops}><Botao tipo="contorno" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setPopAberto(p.id)}>Abrir</Botao></td>
+                </tr>
+              );
+            })}
+            {lista.length === 0 && <tr><td colSpan={6} style={{ ...tdPops, textAlign: "center", color: CORES.cinza }}>Nenhum POP encontrado com os filtros aplicados.</td></tr>}
+          </tbody>
+        </table>
+      </Cartao>
+      {popSelecionado && (
+        <ModalProcedimentoPops pop={popSelecionado} dados={dados} usuario={usuario} atualizarPop={atualizarPop} aoFechar={() => setPopAberto(null)} />
+      )}
+    </div>
+  );
+}
+
+function TelaSSMAPops({ dados, setDados, usuario }) {
+  const pops = (dados.pops || []).filter((p) => p.status === "AGUARDANDO_APROVACAO_SSMA");
+  const souSSMA = temPapelPops(usuario, "ssma");
+
+  const atualizarPop = async (popId, patch, acao, detalhe) => {
+    let nd = { ...dados, pops: dados.pops.map((p) => (p.id === popId ? { ...p, ...patch } : p)) };
+    nd = comLog(nd, usuario, "Procedimentos", acao, detalhe, popId);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  const marcarSingular = (p, feito) => atualizarPop(p.id, {
+    singularUpload: feito, singularPorNome: feito ? usuario.nome : null, singularEm: feito ? new Date().toISOString() : null,
+  }, "Upload no Singular registrado", `${p.codigo}: ${feito ? "sim" : "não"}`);
+
+  const concluir = async (p) => {
+    if (!p.singularUpload) { avisar("Só é possível concluir após o upload no Singular."); return; }
+    const novaRev = p.revisaoEmAndamento || (p.revisaoAtual || 0) + 1;
+    const dataBR = popsHojeBR();
+    await atualizarPop(p.id, {
+      historico: [...(p.historico || []), { rev: novaRev, data: dataBR, descricao: p.descricaoPendente || "" }],
+      revisaoAtual: novaRev, dataRevisao: dataBR, dataRevisaoIso: popsHojeIso(), validade: popsAddDias(popsHojeIso(), dados.popsConfig?.validadeDias || 365),
+      status: "CONCLUIDO", bloqueadoEdicao: false, revisaoEmAndamento: null, descricaoPendente: null, trabalhoEnviado: false,
+    }, "Concluiu (aprovado pelo SSMA)", `${p.codigo} — Rev ${String(novaRev).padStart(2, "0")}`);
+  };
+
+  const reprovar = async (p) => {
+    const obs = window.prompt("Motivo da reprovação (obrigatório):");
+    if (!obs || !obs.trim()) return;
+    await atualizarPop(p.id, {
+      status: "EM_REVISAO", bloqueadoEdicao: false, trabalhoEnviado: false, singularUpload: false, singularEm: null, singularPorNome: null, ssmaEnviadoEm: null,
+      avaliacaoSSMA: { aprovado: false, obs, porNome: usuario.nome, data: new Date().toISOString() },
+    }, "Reprovado pelo SSMA", obs);
+  };
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>SSMA — Aprovação de POPs</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 14px" }}>POPs enviados ao SSMA, aguardando upload no Singular e aprovação. {pops.length} pendente(s).</p>
+      <Cartao style={{ padding: 0, overflow: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 720 }}>
+          <thead><tr>
+            {["Data solicitação", "Código / Área", "Título", "Revisão", "Singular", "Ações"].map((h) => (
+              <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {pops.map((p) => (
+              <tr key={p.id}>
+                <td style={tdPops}>{p.ssmaEnviadoEm ? new Date(p.ssmaEnviadoEm).toLocaleString("pt-BR") : "—"}</td>
+                <td style={tdPops}><b>{p.codigo}</b><br /><span style={{ color: CORES.cinza, fontSize: 11.5 }}>{p.area}</span></td>
+                <td style={tdPops}>{p.titulo}</td>
+                <td style={tdPops}>Rev {String(p.revisaoEmAndamento ?? p.revisaoAtual ?? 0).padStart(2, "0")}</td>
+                <td style={tdPops}>{p.singularUpload ? <span style={{ color: "#0f6b3f", fontWeight: 700 }}>✓ Enviado{p.singularEm ? " " + new Date(p.singularEm).toLocaleDateString("pt-BR") : ""}</span> : <span style={{ color: CORES.laranja }}>pendente</span>}</td>
+                <td style={tdPops}>
+                  {souSSMA ? (
+                    <>
+                      <label style={{ display: "block", marginBottom: 6, fontSize: 12.5, color: CORES.azul, cursor: "pointer" }}>
+                        <input type="checkbox" checked={!!p.singularUpload} onChange={(e) => marcarSingular(p, e.target.checked)} style={{ marginRight: 6, accentColor: CORES.laranja }} />
+                        Enviado ao Singular
+                      </label>
+                      <Botao style={{ padding: "4px 10px", fontSize: 12, marginRight: 6 }} disabled={!p.singularUpload} onClick={() => concluir(p)}>Aprovar / Concluir</Botao>
+                      <Botao tipo="perigo" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => reprovar(p)}>Reprovar</Botao>
+                    </>
+                  ) : <span style={{ color: CORES.cinza, fontSize: 12.5 }}>visualização (somente SSMA age)</span>}
+                </td>
+              </tr>
+            ))}
+            {pops.length === 0 && <tr><td colSpan={6} style={{ ...tdPops, textAlign: "center", color: CORES.cinza }}>Nenhum POP aguardando o SSMA.</td></tr>}
+          </tbody>
+        </table>
+      </Cartao>
+    </div>
+  );
+}
+
+function TelaListaMestraPops({ dados }) {
+  const [busca, setBusca] = useState("");
+  const [fArea, setFArea] = useState("");
+  const [fStatus, setFStatus] = useState("");
+  const pops = dados.pops || [];
+  const areas = dados.popsAreas || [];
+  const q = busca.toLowerCase().trim();
+  const lista = pops.filter((p) =>
+    (!q || `${p.codigo} ${p.titulo}`.toLowerCase().includes(q)) &&
+    (!fArea || p.area === fArea) &&
+    (!fStatus || p.status === fStatus));
+  const statusPresentes = [...new Set(pops.map((p) => p.status))];
+
+  const exportarExcel = () => {
+    const linhas = lista.map((p) => ({
+      "Código": p.codigo, "Título": p.titulo, "Área": p.area, "Revisão": `Rev ${String(p.revisaoAtual ?? 0).padStart(2, "0")}`,
+      "Data Revisão": p.dataRevisao || "", "Validade": p.validade ? formatarDataBR(p.validade) : "", "Status": STATUS_POPS[p.status] || p.status,
+      "Singular": p.singularUpload ? "Sim" : "Não",
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas.length ? linhas : [{}]), "Lista Mestra");
+    XLSX.writeFile(wb, "Lista_Mestra_POPs.xlsx");
+  };
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Lista Mestra</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 14px" }}>Lista Mestra consolidada dos procedimentos. Filtre e baixe em Excel.</p>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14, alignItems: "center" }}>
+        <input style={{ ...inputStyle, minWidth: 220, width: "auto" }} placeholder="🔎 Buscar por código ou título…" value={busca} onChange={(e) => setBusca(e.target.value)} />
+        <select style={{ ...inputStyle, width: "auto" }} value={fArea} onChange={(e) => setFArea(e.target.value)}>
+          <option value="">Todas as áreas</option>
+          {areas.map((a) => <option key={a.id} value={a.pastaNorm}>{a.pastaNorm}</option>)}
+        </select>
+        <select style={{ ...inputStyle, width: "auto" }} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+          <option value="">Todos os status</option>
+          {statusPresentes.map((s) => <option key={s} value={s}>{STATUS_POPS[s] || s}</option>)}
+        </select>
+        <Botao tipo="laranja" style={{ marginLeft: "auto" }} onClick={exportarExcel}>⬇ Baixar Lista Mestra (.xlsx)</Botao>
+      </div>
+      <span style={{ fontSize: 12.5, color: CORES.cinza }}>{lista.length} de {pops.length} procedimento(s){lista.length !== pops.length ? " (filtrado)" : ""}.</span>
+      <Cartao style={{ padding: 0, overflow: "auto", marginTop: 8 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 820 }}>
+          <thead><tr>
+            {["Código", "Título", "Área", "Revisão", "Data Rev.", "Validade", "Status", "Singular"].map((h) => (
+              <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {lista.map((p) => (
+              <tr key={p.id}>
+                <td style={tdPops}><b>{p.codigo}</b></td>
+                <td style={tdPops}>{p.titulo}</td>
+                <td style={tdPops}>{p.area}</td>
+                <td style={tdPops}>Rev {String(p.revisaoAtual ?? 0).padStart(2, "0")}</td>
+                <td style={tdPops}>{p.dataRevisao || "—"}</td>
+                <td style={tdPops}>{p.validade ? formatarDataBR(p.validade) : "—"}</td>
+                <td style={tdPops}><span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[p.status] || CORES.azul }}>{STATUS_POPS[p.status] || p.status}</span></td>
+                <td style={tdPops}>{p.singularUpload ? <span style={{ color: "#0f6b3f" }}>Sim</span> : <span style={{ color: CORES.cinza }}>Não</span>}</td>
+              </tr>
+            ))}
+            {lista.length === 0 && <tr><td colSpan={8} style={{ ...tdPops, textAlign: "center", color: CORES.cinza }}>Nenhum procedimento encontrado com os filtros.</td></tr>}
+          </tbody>
+        </table>
+      </Cartao>
     </div>
   );
 }
@@ -1793,7 +2353,7 @@ function TelaAuditoria({ dados, categoriasVisiveis }) {
     XLSX.writeFile(wb, "Trilha_Auditoria.xlsx");
   };
 
-  const corCat = { "Compra": "#2D3D70", "Cadastro": "#0f6b3f", "Movimentação": "#b45309", "Materiais": "#5b21b6", "Usuários": "#9d174d", "Acesso": "#334155" };
+  const corCat = { "Compra": "#2D3D70", "Cadastro": "#0f6b3f", "Movimentação": "#b45309", "Materiais": "#5b21b6", "Procedimentos": "#b45309", "Usuários": "#9d174d", "Acesso": "#334155" };
   const th = { padding: "8px 8px", fontSize: 11, textTransform: "uppercase", letterSpacing: ".03em", color: "#fff", background: CORES.azul, textAlign: "left", whiteSpace: "nowrap" };
   const td = { padding: "6px 8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 12.5, color: CORES.azul, verticalAlign: "top" };
 
@@ -2045,6 +2605,16 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
       return;
     }
 
+    if (categoria === "papeisPops") {
+      const papeisAtual = atuais.papeisPops || permissoesDefault().papeisPops;
+      const novoValor = !papeisAtual[id];
+      const permissoes = { ...atuais, papeisPops: { ...papeisAtual, [id]: novoValor } };
+      let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
+      nd = comLog(nd, usuario, "Usuários", `Alterou papel em Gestão de Procedimentos (${id}) para "${novoValor ? "Concedido" : "Removido"}"`, email, email);
+      setDados(nd); await salvarDados(nd);
+      return;
+    }
+
     const grupos = { ...atuais.grupos };
     const subsistemas = { ...atuais.subsistemas };
     const features = { ...atuais.features };
@@ -2279,6 +2849,20 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                             </div>
                           </div>
                         )}
+                        {perm.subsistemas.POPS && (
+                          <div style={{ marginTop: 4, paddingTop: 10, borderTop: `1px dashed ${CORES.cinza}` }}>
+                            <strong style={{ fontSize: 11, color: "#b45309", textTransform: "uppercase", letterSpacing: ".05em" }}>Papéis em Gestão de Procedimentos</strong>
+                            <div style={{ marginTop: 4, display: "flex", gap: 14, flexWrap: "wrap" }}>
+                              {[["auditor", "Auditor"], ["avaliador", "Avaliador"], ["ssma", "SSMA"]].map(([id, rot]) => (
+                                <label key={id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
+                                  <input type="checkbox" checked={!!(perm.papeisPops && perm.papeisPops[id])} onChange={() => alternarPermissao(email, "papeisPops", id)}
+                                    style={{ width: 14, height: 14, accentColor: CORES.laranja }} />
+                                  {rot}
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </details>
                   );
@@ -2374,6 +2958,20 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                                     {f.nome}
                                   </label>
                                 ))}
+                              </div>
+                            )}
+                            {subId === "POPS" && perm.subsistemas.POPS && (
+                              <div style={{ marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${CORES.cinza}` }}>
+                                <span style={{ fontSize: 10.5, color: "#b45309", fontWeight: 700, textTransform: "uppercase" }}>Papéis</span>
+                                <div style={{ marginTop: 2, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                                  {[["auditor", "Auditor"], ["avaliador", "Avaliador"], ["ssma", "SSMA"]].map(([id, rot]) => (
+                                    <label key={id} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, color: CORES.azul, cursor: "pointer" }}>
+                                      <input type="checkbox" checked={!!(perm.papeisPops && perm.papeisPops[id])} onChange={() => alternarPermissao(email, "papeisPops", id)}
+                                        style={{ width: 13, height: 13, accentColor: CORES.laranja }} />
+                                      {rot}
+                                    </label>
+                                  ))}
+                                </div>
                               </div>
                             )}
                           </td>
@@ -2791,7 +3389,7 @@ const ItemNav = ({ ativo, icone, rotulo, onClick }) => {
   );
 };
 
-function SidebarAdministrativo({ itens, telaAtual, aoNavegar, aoVoltarPortal }) {
+function SidebarAdministrativo({ itens, telaAtual, aoNavegar, aoVoltarPortal, titulo = "🛒 Compras e Cadastros", rotuloVoltar = "← Administrativo" }) {
   return (
     <aside className="so-tela" style={{
       background: `linear-gradient(180deg, ${CORES.azul}, ${CORES.azulEscuro})`, borderRadius: 14, overflow: "hidden",
@@ -2799,9 +3397,9 @@ function SidebarAdministrativo({ itens, telaAtual, aoNavegar, aoVoltarPortal }) 
     }}>
       <div style={{ padding: "16px 16px 12px", borderBottom: "1px solid rgba(255,255,255,.14)" }}>
         <button type="button" onClick={aoVoltarPortal} style={{ border: "none", background: "none", color: "rgba(255,255,255,.75)", fontSize: 12, cursor: "pointer", padding: 0, fontFamily: "inherit", marginBottom: 8, display: "block" }}>
-          ← Administrativo
+          {rotuloVoltar}
         </button>
-        <div style={{ color: "#fff", fontWeight: 800, fontSize: 15 }}>🛒 Compras e Cadastros</div>
+        <div style={{ color: "#fff", fontWeight: 800, fontSize: 15 }}>{titulo}</div>
       </div>
       <nav style={{ flex: 1, padding: "8px 0" }}>
         {itens.map((it) => <ItemNav key={it.id} ativo={telaAtual === it.id} icone={it.icone} rotulo={it.rotulo} onClick={() => aoNavegar(it.id)} />)}
@@ -2976,17 +3574,14 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
    do próprio AURA 360°, sem abrir aba/janela extra — atalho temporário até existir SSO real (Entra ID)
    entre o AURA 360° e esses sistemas (login continua sendo feito dentro do próprio sistema embutido). */
 // >>> CONVENÇÃO DE URL DE PRODUÇÃO (definida por Hallysson, ainda não aplicável — a TI ainda não
-// hospedou nada de verdade): a raiz do site é o próprio AURA 360° Planta (página principal); cada
-// Subsistema externo fica numa subpasta "aura360/sistema/subsistemas/<nome-do-subsistema>" do mesmo
-// host — ex.: Gestão de Procedimentos (aura-pops) em ".../aura360/sistema/subsistemas/pops/". Quando
-// a TI publicar o aura-pops de verdade, trocar a `url` abaixo (Homologação e, se fizer sentido, Teste)
-// para esse caminho, no domínio definitivo. Até lá, mantém-se o esquema local descrito abaixo.
+// hospedou nada de verdade): a raiz do site é o próprio AURA 360° Planta (página principal); um
+// eventual Subsistema externo futuro ficaria numa subpasta "aura360/sistema/subsistemas/<nome>" do
+// mesmo host. Não se aplica mais ao Gestão de Procedimentos, que passou a ser nativo (ver abaixo).
 const SISTEMAS_POR_GRUPO = {
   ADMIN: [{ id: "COMPRAS", titulo: "Compras e Cadastros", icone: "🛒", cor: CORES.azul, desc: "Solicitação de compras, cadastros, materiais e relatórios.", externo: false }],
-  // aura-pops ainda não tem endereço público — só responde em localhost:3100 na máquina onde o
-  // `node aura-pops/server.js` estiver rodando. Por isso o link só é preenchido em Homologação (uso local
-  // nesta máquina); em Teste (GitHub Pages, acessado de qualquer computador) fica vazio de propósito.
-  SEG: [{ id: "POPS", titulo: "Gestão de Procedimentos", icone: "📄", cor: "#b45309", desc: "Procedimentos operacionais — inspeções, revisão e aprovação SSMA.", externo: true, modoAbertura: "embutido", url: AMBIENTE === "teste" ? "" : "http://localhost:3100/" }],
+  // Gestão de Procedimentos é nativo do AURA 360° desde 2026-08-24 (portado do antigo app separado
+  // aura-pops) — mesmo login, mesmos dados, sem depender de nenhum servidor externo.
+  SEG: [{ id: "POPS", titulo: "Gestão de Procedimentos", icone: "📄", cor: "#b45309", desc: "Procedimentos operacionais — inspeções, revisão e aprovação SSMA.", externo: false }],
   OPER: [],
 };
 const TITULOS_GRUPO = { ADMIN: "🗂️ Administrativo", SEG: "🦺 Segurança", OPER: "🏭 Operação" };
@@ -3325,21 +3920,36 @@ function App() {
   // Painel é a primeira tela do Subsistema (antes de Solicitação de Compras/Cadastros/Relatórios) —
   // sempre visível a quem acessa o Subsistema, sem depender do checklist de funcionalidades.
   const itensAdmin = [{ id: "PAINEL", rotulo: "Painel", icone: "📊" }, ...MENU_VISIVEL, ...(souAdminDeCompras ? MENU_ADMIN_COMPRAS : [])];
+
+  // Gestão de Procedimentos (Subsistema de Segurança) — mesma lógica de features visíveis/ocultas.
+  const MENU_POPS = [
+    { id: "PROCEDIMENTOS", rotulo: "Procedimentos", icone: "📄", feature: "TELA_POPS_PROCEDIMENTOS" },
+    { id: "SSMA", rotulo: "SSMA", icone: "🛡️", feature: "TELA_POPS_SSMA" },
+    { id: "LISTA_MESTRA", rotulo: "Lista Mestra", icone: "📋", feature: "TELA_POPS_LISTA_MESTRA" },
+  ];
+  const MENU_POPS_VISIVEL = ehGM ? MENU_POPS : MENU_POPS.filter((m) => permissoesUsuario.features[m.feature] !== false);
+  const itensPops = [{ id: "PAINEL", rotulo: "Painel", icone: "📊" }, ...MENU_POPS_VISIVEL];
+
   // Telas que devem ocupar a tela toda (sem a faixa de 80vw central, com apenas uma margem fina):
-  // o sistema de Compras e Cadastros, Configurações e qualquer subsistema externo já aberto embutido —
-  // todos têm navegação própria (sidebar, abas ou app completo) e ganham mais espaço útil sem a
-  // moldura do portal.
-  const telaCheia = (area === "ADMIN" && appAdmin === "COMPRAS") || area === "CONFIG" || !!sistemaEmbutido;
-  // Subsistemas externos (apps próprios): quando modoAbertura="embutido", rodam dentro da própria tela do
-  // AURA 360° via iframe (sem aba/janela extra); senão, abrem em nova aba. Atalho temporário até existir SSO real.
+  // os Subsistemas nativos (sidebar própria) e Configurações — ganham mais espaço útil sem a
+  // moldura do portal. `sistemaEmbutido` fica de infraestrutura pronta para um futuro Subsistema
+  // externo (hoje nenhum usa mais — Gestão de Procedimentos passou a ser nativo).
+  const telaCheia = (area === "ADMIN" && appAdmin === "COMPRAS") || (area === "SEG" && appAdmin === "POPS") || area === "CONFIG" || !!sistemaEmbutido;
   const abrirSistemaExterno = (sistema) => {
     if (!sistema.url) { avisar(`"${sistema.titulo}" ainda não foi publicado. Fale com o administrador do sistema.`); return; }
     if (sistema.modoAbertura === "embutido") { setSistemaEmbutido(sistema); return; }
     window.open(sistema.url, "_blank", "noopener");
   };
+  // Abre um Subsistema do catálogo: nativo (tela própria dentro do AURA 360°) ou externo (infra legada,
+  // sem uso hoje). Compartilhado pelos Grupos Administrativo e Segurança.
+  const abrirSubsistema = (s) => {
+    if (s.externo) { abrirSistemaExterno(s); return; }
+    setAppAdmin(s.id); setTela("MENU");
+  };
 
   // Trilha de navegação (breadcrumb) — reflete onde o usuário está dentro do portal
   const ROTULOS_TELA_ADMIN = { MENU: "Painel", PAINEL: "Painel", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios", MATERIAIS: "Materiais", REGISTROS: "Registros (Auditoria)", RESPONSAVEIS: "Administradores Responsáveis" };
+  const ROTULOS_TELA_POPS = { MENU: "Painel", PAINEL: "Painel", PROCEDIMENTOS: "Procedimentos", SSMA: "SSMA", LISTA_MESTRA: "Lista Mestra" };
   const ROTULOS_ABA_CONFIG = { usuarios: "Usuários", registros: "Registros (Auditoria)", sobre: "Sobre" };
   const irParaHome = () => { setArea(null); setTela("MENU"); setAppAdmin(null); setSistemaEmbutido(null); };
   const trilha = (() => {
@@ -3352,9 +3962,11 @@ function App() {
       return [...base, { rotulo: ROTULOS_TELA_ADMIN[tela] || "Solicitação de Compras" }];
     }
     if (area === "SEG") {
-      const seg = { rotulo: "Segurança", aoClicar: () => setSistemaEmbutido(null) };
-      if (!sistemaEmbutido) return [home, { rotulo: "Segurança" }];
-      return [home, seg, { rotulo: sistemaEmbutido.titulo }];
+      if (sistemaEmbutido) return [home, { rotulo: "Segurança", aoClicar: () => setSistemaEmbutido(null) }, { rotulo: sistemaEmbutido.titulo }];
+      const seg = { rotulo: "Segurança", aoClicar: () => setAppAdmin(null) };
+      if (appAdmin === null) return [home, { rotulo: "Segurança" }];
+      const base = [home, seg, { rotulo: "Gestão de Procedimentos", aoClicar: () => setTela("MENU") }];
+      return [...base, { rotulo: ROTULOS_TELA_POPS[tela] || "Painel" }];
     }
     if (area === "OPER") return [home, { rotulo: "Operação" }];
     if (area === "CONFIG") return [home, { rotulo: "Configurações", aoClicar: () => setConfigAba("usuarios") }, { rotulo: ROTULOS_ABA_CONFIG[configAba] || "Usuários" }];
@@ -3406,9 +4018,9 @@ function App() {
           <PortalHome nome={usuarioAtual.nome} aoAbrir={(a) => { setArea(a); setTela("MENU"); setAppAdmin(null); }} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
         )}
 
-        {/* Área 1 — Administrativo: segundo menu (escolha do sistema) → sistema de Compras (sidebar, padrão do app de POPs) */}
+        {/* Área 1 — Administrativo: segundo menu (escolha do sistema) → sistema de Compras (sidebar própria) */}
         {area === "ADMIN" && appAdmin === null && (
-          <SegundoMenuGrupo grupoId="ADMIN" aoEscolher={(s) => { if (s.externo) { abrirSistemaExterno(s); return; } setAppAdmin(s.id); setTela("MENU"); }} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
+          <SegundoMenuGrupo grupoId="ADMIN" aoEscolher={abrirSubsistema} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
         )}
         {area === "ADMIN" && appAdmin === "COMPRAS" && (
           <div style={{ display: "grid", gridTemplateColumns: (typeof window !== "undefined" && window.innerWidth < 800) ? "1fr" : "232px 1fr", gap: 20, alignItems: "start" }}>
@@ -3426,15 +4038,26 @@ function App() {
           </div>
         )}
 
-        {/* Área 2 — Segurança: segundo menu, ou o sistema externo já aberto embutido (iframe) em tela cheia.
-            Sem card/borda arredondada, sem botão de volta — a navegação de volta fica só na trilha
-            (breadcrumb) do topo. A ideia é que o subsistema pareça um app completo, não uma caixa embutida. */}
+        {/* Área 2 — Segurança: segundo menu → Gestão de Procedimentos (sidebar própria, nativo).
+            `sistemaEmbutido` é infraestrutura para um futuro Subsistema externo — nenhum usa hoje. */}
         {area === "SEG" && sistemaEmbutido && (
           <iframe src={sistemaEmbutido.url} title={sistemaEmbutido.titulo}
             style={{ width: "100%", height: "calc(100vh - 100px)", border: "none", display: "block" }} />
         )}
-        {area === "SEG" && !sistemaEmbutido && (
-          <SegundoMenuGrupo grupoId="SEG" aoEscolher={abrirSistemaExterno} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
+        {area === "SEG" && !sistemaEmbutido && appAdmin === null && (
+          <SegundoMenuGrupo grupoId="SEG" aoEscolher={abrirSubsistema} permissoesUsuario={permissoesUsuario} ehGM={ehGM} />
+        )}
+        {area === "SEG" && appAdmin === "POPS" && (
+          <div style={{ display: "grid", gridTemplateColumns: (typeof window !== "undefined" && window.innerWidth < 800) ? "1fr" : "232px 1fr", gap: 20, alignItems: "start" }}>
+            <SidebarAdministrativo itens={itensPops} telaAtual={tela === "MENU" ? "PAINEL" : tela} aoNavegar={(id) => setTela(id)} aoVoltarPortal={() => setAppAdmin(null)}
+              titulo="📄 Gestão de Procedimentos" rotuloVoltar="← Segurança" />
+            <div style={{ minWidth: 0 }}>
+              {(tela === "MENU" || tela === "PAINEL") && <TelaPainelPops dados={dados} />}
+              {tela === "PROCEDIMENTOS" && <TelaProcedimentosPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+              {tela === "SSMA" && <TelaSSMAPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+              {tela === "LISTA_MESTRA" && <TelaListaMestraPops dados={dados} />}
+            </div>
+          </div>
         )}
 
         {/* Área 3 — Operação (em desenvolvimento) */}
