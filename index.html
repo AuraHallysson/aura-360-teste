@@ -90,8 +90,8 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.1.1";
-const VERSAO_DATA = "2026-08-21"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
+const VERSAO_APP = "1.2.0";
+const VERSAO_DATA = "2026-08-24"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
@@ -229,9 +229,13 @@ const subsistemasAdministradosPor = (u) => {
   return Object.keys(adminDe).filter((id) => adminDe[id] === true);
 };
 // Categorias da trilha de auditoria (SOX) pertencentes a cada Subsistema nativo — usado para
-// restringir o que um administrador de Subsistema vê em Registros. "Usuários"/"Acesso" são
-// eventos de plataforma (todo o AURA 360°), não de um Subsistema específico, e ficam de fora.
+// restringir o que um administrador de Subsistema vê em Registros (essa visão fica dentro do
+// próprio Subsistema, ex.: Administrativo → Compras e Cadastros → Registros).
 const CATEGORIAS_POR_SUBSISTEMA = { COMPRAS: ["Compra", "Cadastro", "Movimentação", "Materiais"], POPS: [] };
+// Categorias de plataforma (todo o AURA 360° Planta, não de um Subsistema específico): login/acesso
+// e gestão de usuários. É só isso que aparece em Configurações → Registros (visão do GM) — a
+// auditoria de um Subsistema só aparece se a pessoa abrir aquele Subsistema.
+const CATEGORIAS_PLATAFORMA = ["Usuários", "Acesso"];
 
 // Migração idempotente: perfil antigo "Administrador" → "GM"; garante permissoes (com adminDe e
 // ativo) em usuários de versões anteriores, sem apagar nada que já exista.
@@ -1803,6 +1807,67 @@ function TelaAuditoria({ dados, categoriasVisiveis }) {
   );
 }
 
+/* Administradores Responsáveis — pertence ao Subsistema Compras e Cadastros (não é uma configuração
+   de plataforma do AURA 360°): define quais GM são notificados quando um usuário comum envia uma
+   solicitação de compra/cadastro. Sem vínculo definido, o alerta vai a todos os GM. */
+function TelaAdministradoresResponsaveis({ dados, setDados, usuario }) {
+  const alternarVinculo = async (email, adminEmail) => {
+    const atual = dados.usuarios[email].administradores || [];
+    const novos = atual.includes(adminEmail) ? atual.filter((a) => a !== adminEmail) : [...atual, adminEmail];
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...dados.usuarios[email], administradores: novos } } };
+    nd = comLog(nd, usuario, "Usuários", "Alterou administradores responsáveis", `${email} → [${novos.join(", ") || "nenhum"}]`, email);
+    setDados(nd); await salvarDados(nd);
+  };
+
+  const th = { padding: 8, fontSize: 11.5, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" };
+  const td = { padding: "8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 14, color: CORES.azul };
+  const listaAdm = Object.entries(dados.usuarios).filter(([, x]) => x.perfil === "GM");
+  const usuariosComAcesso = Object.entries(dados.usuarios).filter(([, u]) => u.perfil !== "GM" && (u.permissoes || permissoesDefault()).subsistemas.COMPRAS);
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Administradores Responsáveis</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>
+        Cada usuário com acesso a Compras e Cadastros pode ter um ou mais <strong>GM responsáveis</strong>: as
+        solicitações dele são notificadas apenas a esses responsáveis. Sem vínculo definido, o alerta vai a todos os GM.
+      </p>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead><tr><th style={th}>Nome</th><th style={th}>E-mail</th><th style={th}>Administradores responsáveis</th></tr></thead>
+        <tbody>
+          {usuariosComAcesso.map(([email, u]) => {
+            const vinc = (u.administradores || []).filter((e2) => dados.usuarios[e2] && dados.usuarios[e2].perfil === "GM");
+            return (
+              <tr key={email}>
+                <td style={td}>{u.nome}</td>
+                <td style={td}>{email}</td>
+                <td style={{ ...td, minWidth: 210 }}>
+                  <details>
+                    <summary style={{ cursor: "pointer", fontSize: 13, color: vinc.length ? CORES.azul : CORES.laranja, fontWeight: 600 }}>
+                      {vinc.length ? `${vinc.length} vinculado${vinc.length > 1 ? "s" : ""}: ${vinc.map((e2) => dados.usuarios[e2].nome.split(" ")[0]).join(", ")}` : "Nenhum — alerta irá a todos"}
+                    </summary>
+                    <div style={{ marginTop: 6, background: CORES.cinzaClaro, borderRadius: 6, padding: "8px 10px" }}>
+                      {listaAdm.map(([e2, adm]) => (
+                        <label key={e2} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, padding: "3px 0", cursor: "pointer" }}>
+                          <input type="checkbox" checked={vinc.includes(e2)} onChange={() => alternarVinculo(email, e2)}
+                            style={{ width: 15, height: 15, accentColor: CORES.laranja }} />
+                          {adm.nome} <span style={{ color: CORES.cinza }}>({e2})</span>
+                        </label>
+                      ))}
+                    </div>
+                  </details>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {usuariosComAcesso.length === 0 && (
+        <p style={{ textAlign: "center", color: CORES.cinza, fontSize: 13, padding: "24px 0" }}>Nenhum usuário com acesso a Compras e Cadastros ainda.</p>
+      )}
+    </div>
+  );
+}
+
 function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
   const ehGM = usuario.perfil === "GM";
   const subsistemasQueAdministro = subsistemasAdministradosPor(usuario);
@@ -1836,15 +1901,6 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
     }));
     let nd = { ...dados, usuarios };
     nd = comLog(nd, usuario, "Usuários", `Alterou perfil para "${perfil}"`, email, email);
-    setDados(nd); await salvarDados(nd);
-  };
-
-  // Vincula/desvincula um administrador responsável a um usuário comum
-  const alternarVinculo = async (email, adminEmail) => {
-    const atual = dados.usuarios[email].administradores || [];
-    const novos = atual.includes(adminEmail) ? atual.filter((a) => a !== adminEmail) : [...atual, adminEmail];
-    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...dados.usuarios[email], administradores: novos } } };
-    nd = comLog(nd, usuario, "Usuários", "Alterou administradores responsáveis", `${email} → [${novos.join(", ") || "nenhum"}]`, email);
     setDados(nd); await salvarDados(nd);
   };
 
@@ -1959,14 +2015,17 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
   const td = { padding: "8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 14, color: CORES.azul };
 
   return (
-    <Cartao style={{ maxWidth: 1040, margin: "0 auto", position: "relative" }}>
-      {/* Administrador de Subsistema (não-GM) só vê as abas do(s) Subsistema(s) que ele administra:
-          Usuários (escopo restrito), Registros (categorias do seu Subsistema) e, só se administrar
-          Compras e Cadastros, Materiais. GM continua vendo tudo, sem restrição. */}
+    <Cartao style={{ maxWidth: "100%", margin: "0 auto", position: "relative" }}>
+      {/* Configurações é o AURA 360° Planta como plataforma: cadastro/acesso de usuários e o log de
+          eventos de plataforma (login, criação/edição de usuário). Ferramentas específicas de um
+          Subsistema (Materiais, Registros de Compras, Administradores Responsáveis) NÃO ficam aqui —
+          moraram dentro do próprio Subsistema (Administrativo → Compras e Cadastros), tanto para GM
+          quanto para o administrador delegado. Registros aqui só mostra eventos de plataforma; nunca
+          recebe atualizações de um Subsistema — essas só aparecem se a pessoa abrir o Subsistema. */}
       <div className="so-tela" style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
         {(ehGM
-          ? [["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"], ["materiais", "🔄 Materiais"], ["sobre", "ℹ️ Sobre"]]
-          : [["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"], ...(subsistemasQueAdministro.includes("COMPRAS") ? [["materiais", "🔄 Materiais"]] : []), ["sobre", "ℹ️ Sobre"]]
+          ? [["usuarios", "👥 Usuários"], ["registros", "📜 Registros (Auditoria)"], ["sobre", "ℹ️ Sobre"]]
+          : [["usuarios", "👥 Usuários"], ["sobre", "ℹ️ Sobre"]]
         ).map(([id, rot]) => (
           <button key={id} onClick={() => setAba(id)} style={{
             padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
@@ -1975,11 +2034,9 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
         ))}
       </div>
 
-      {aba === "registros" && (
-        <TelaAuditoria dados={dados} categoriasVisiveis={ehGM ? undefined : subsistemasQueAdministro.flatMap((id) => CATEGORIAS_POR_SUBSISTEMA[id] || [])} />
+      {aba === "registros" && ehGM && (
+        <TelaAuditoria dados={dados} categoriasVisiveis={CATEGORIAS_PLATAFORMA} />
       )}
-
-      {aba === "materiais" && (ehGM || subsistemasQueAdministro.includes("COMPRAS")) && <TelaMateriais dados={dados} setDados={setDados} usuario={usuario} />}
 
       {aba === "sobre" && (
         <div style={{ maxWidth: 560 }}>
@@ -2014,8 +2071,6 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
       <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>
         Somente usuários cadastrados aqui têm acesso ao sistema. Perfis: <strong>Usuário Comum</strong>, <strong>Administrador Subsistema</strong> (poderes
         delegados, restritos ao(s) Subsistema(s) marcados abaixo em "Administra o Subsistema") e <strong>GM</strong> (administrador geral, acesso total).
-        Cada usuário comum pode ter um ou mais <strong>administradores responsáveis</strong>: as solicitações dele são notificadas
-        apenas a esses responsáveis (sem vínculo definido, o alerta vai a todos os GM).
         As senhas são armazenadas apenas como hash criptográfico — nem os administradores conseguem visualizá-las.
       </p>
 
@@ -2036,7 +2091,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
       </div>
 
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead><tr><th style={th}>Nome</th><th style={th}>E-mail</th><th style={th}>Perfil</th><th style={th}>Administradores responsáveis</th><th style={th}>Permissões (Grupos/Subsistemas)</th><th style={th}>Senha</th><th style={th}>Status</th><th style={th}>Ações</th></tr></thead>
+        <thead><tr><th style={th}>Nome</th><th style={th}>E-mail</th><th style={th}>Perfil</th><th style={th}>Permissões (Grupos/Subsistemas)</th><th style={th}>Senha</th><th style={th}>Status</th><th style={th}>Ações</th></tr></thead>
         <tbody>
           {Object.entries(dados.usuarios).map(([email, u]) => (
             <tr key={email}>
@@ -2051,30 +2106,6 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                   <option>Administrador Subsistema</option>
                   <option>GM</option>
                 </select>
-              </td>
-              <td style={{ ...td, minWidth: 210 }}>
-                {u.perfil === "GM" ? (
-                  <span style={{ color: CORES.cinza, fontSize: 12.5 }}>— (é GM)</span>
-                ) : (() => {
-                  const listaAdm = Object.entries(dados.usuarios).filter(([, x]) => x.perfil === "GM");
-                  const vinc = (u.administradores || []).filter((e2) => dados.usuarios[e2] && dados.usuarios[e2].perfil === "GM");
-                  return (
-                    <details>
-                      <summary style={{ cursor: "pointer", fontSize: 13, color: vinc.length ? CORES.azul : CORES.laranja, fontWeight: 600 }}>
-                        {vinc.length ? `${vinc.length} vinculado${vinc.length > 1 ? "s" : ""}: ${vinc.map((e2) => dados.usuarios[e2].nome.split(" ")[0]).join(", ")}` : "Nenhum — alerta irá a todos"}
-                      </summary>
-                      <div style={{ marginTop: 6, background: CORES.cinzaClaro, borderRadius: 6, padding: "8px 10px" }}>
-                        {listaAdm.map(([e2, adm]) => (
-                          <label key={e2} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, padding: "3px 0", cursor: "pointer" }}>
-                            <input type="checkbox" checked={vinc.includes(e2)} onChange={() => alternarVinculo(email, e2)}
-                              style={{ width: 15, height: 15, accentColor: CORES.laranja }} />
-                            {adm.nome} <span style={{ color: CORES.cinza }}>({e2})</span>
-                          </label>
-                        ))}
-                      </div>
-                    </details>
-                  );
-                })()}
               </td>
               <td style={{ ...td, minWidth: 240 }}>
                 {u.perfil === "GM" ? (
@@ -2842,6 +2873,12 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
    Subsistemas "externos" (apps próprios, como o Gestão de Procedimentos) rodam embutidos (iframe) dentro
    do próprio AURA 360°, sem abrir aba/janela extra — atalho temporário até existir SSO real (Entra ID)
    entre o AURA 360° e esses sistemas (login continua sendo feito dentro do próprio sistema embutido). */
+// >>> CONVENÇÃO DE URL DE PRODUÇÃO (definida por Hallysson, ainda não aplicável — a TI ainda não
+// hospedou nada de verdade): a raiz do site é o próprio AURA 360° Planta (página principal); cada
+// Subsistema externo fica numa subpasta "aura360/sistema/subsistemas/<nome-do-subsistema>" do mesmo
+// host — ex.: Gestão de Procedimentos (aura-pops) em ".../aura360/sistema/subsistemas/pops/". Quando
+// a TI publicar o aura-pops de verdade, trocar a `url` abaixo (Homologação e, se fizer sentido, Teste)
+// para esse caminho, no domínio definitivo. Até lá, mantém-se o esquema local descrito abaixo.
 const SISTEMAS_POR_GRUPO = {
   ADMIN: [{ id: "COMPRAS", titulo: "Compras e Cadastros", icone: "🛒", cor: CORES.azul, desc: "Solicitação de compras, cadastros, materiais e relatórios.", externo: false }],
   // aura-pops ainda não tem endereço público — só responde em localhost:3100 na máquina onde o
@@ -3170,17 +3207,26 @@ function App() {
   ];
   // Funcionalidades sem permissão ficam OCULTAS (o usuário já está dentro de um Subsistema ao qual tem acesso)
   const ehGM = EH_GM(usuarioAtual);
-  const souAdminDeAlgumSubsistema = subsistemasAdministradosPor(usuarioAtual).length > 0;
+  const subsistemasQueAdministroApp = subsistemasAdministradosPor(usuarioAtual);
+  const souAdminDeAlgumSubsistema = subsistemasQueAdministroApp.length > 0;
   const permissoesUsuario = usuarioAtual.permissoes || permissoesDefault();
   const MENU_VISIVEL = ehGM ? MENU : MENU.filter((m) => permissoesUsuario.features[m.feature] !== false);
-  // Navegação do sistema de Compras e Cadastros (sidebar). Configurações é administração do
-  // AURA 360° Planta como um todo (usuários, permissões, auditoria) — fica num nível global,
-  // não dentro de um Subsistema específico.
-  const itensAdmin = MENU_VISIVEL;
+  // Ferramentas administrativas do próprio Subsistema Compras e Cadastros (Materiais, Registros de
+  // auditoria do Subsistema, Administradores Responsáveis) — moram AQUI, dentro do Subsistema, e não
+  // em Configurações (que é só a plataforma AURA 360° como um todo). Só GM ou quem administra
+  // Compras e Cadastros por delegação enxerga essas telas.
+  const MENU_ADMIN_COMPRAS = [
+    { id: "MATERIAIS", rotulo: "Materiais", icone: "🔄" },
+    { id: "REGISTROS", rotulo: "Registros (Auditoria)", icone: "📜" },
+    { id: "RESPONSAVEIS", rotulo: "Administradores Responsáveis", icone: "👤" },
+  ];
+  const souAdminDeCompras = ehGM || subsistemasQueAdministroApp.includes("COMPRAS");
+  const itensAdmin = [...MENU_VISIVEL, ...(souAdminDeCompras ? MENU_ADMIN_COMPRAS : [])];
   // Telas que devem ocupar a tela toda (sem a faixa de 80vw central, com apenas uma margem fina):
-  // o sistema de Compras e Cadastros e qualquer subsistema externo já aberto embutido — ambos têm
-  // navegação própria (sidebar ou app completo) e ganham mais espaço útil sem a moldura do portal.
-  const telaCheia = (area === "ADMIN" && appAdmin === "COMPRAS") || !!sistemaEmbutido;
+  // o sistema de Compras e Cadastros, Configurações e qualquer subsistema externo já aberto embutido —
+  // todos têm navegação própria (sidebar, abas ou app completo) e ganham mais espaço útil sem a
+  // moldura do portal.
+  const telaCheia = (area === "ADMIN" && appAdmin === "COMPRAS") || area === "CONFIG" || !!sistemaEmbutido;
   // Subsistemas externos (apps próprios): quando modoAbertura="embutido", rodam dentro da própria tela do
   // AURA 360° via iframe (sem aba/janela extra); senão, abrem em nova aba. Atalho temporário até existir SSO real.
   const abrirSistemaExterno = (sistema) => {
@@ -3190,8 +3236,8 @@ function App() {
   };
 
   // Trilha de navegação (breadcrumb) — reflete onde o usuário está dentro do portal
-  const ROTULOS_TELA_ADMIN = { MENU: "Solicitação de Compras", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios" };
-  const ROTULOS_ABA_CONFIG = { usuarios: "Usuários", registros: "Registros (Auditoria)", materiais: "Materiais", sobre: "Sobre" };
+  const ROTULOS_TELA_ADMIN = { MENU: "Solicitação de Compras", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios", MATERIAIS: "Materiais", REGISTROS: "Registros (Auditoria)", RESPONSAVEIS: "Administradores Responsáveis" };
+  const ROTULOS_ABA_CONFIG = { usuarios: "Usuários", registros: "Registros (Auditoria)", sobre: "Sobre" };
   const irParaHome = () => { setArea(null); setTela("MENU"); setAppAdmin(null); setSistemaEmbutido(null); };
   const trilha = (() => {
     if (area === null) return [];
@@ -3270,6 +3316,9 @@ function App() {
               {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "RELATORIOS" && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
+              {tela === "MATERIAIS" && souAdminDeCompras && <TelaMateriais dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+              {tela === "REGISTROS" && souAdminDeCompras && <TelaAuditoria dados={dados} categoriasVisiveis={CATEGORIAS_POR_SUBSISTEMA.COMPRAS} />}
+              {tela === "RESPONSAVEIS" && souAdminDeCompras && <TelaAdministradoresResponsaveis dados={dados} setDados={setDados} usuario={usuarioAtual} />}
             </div>
           </div>
         )}
