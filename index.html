@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.3.0";
+const VERSAO_APP = "1.3.1";
 const VERSAO_DATA = "2026-08-24"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -114,7 +114,10 @@ const MATERIAIS_INICIAIS = [
   { codigo: "105090", descricao: "TELA DE PENEIRAMENTO 12MM 1500X2000", unidade: "UN" },
 ];
 
-// Ambiente de Testes: dados fictícios (nunca o acervo real da planta — esse fica só em Homologação).
+// Migração única (2026-08-24) do acervo que já existia no antigo app separado "aura-pops" —
+// a partir daqui, a gestão passa a ser só aqui dentro (sem depender de nenhum servidor externo).
+// Os arquivos .docx de cada POP não foram trazidos (ficam só no arquivo físico/rede); a partir de
+// agora, cada revisão nova anexa o próprio arquivo aqui dentro (como já funciona em Compras e Cadastros).
 const AREAS_POPS_INICIAIS = [
   { id: 1, numero: 1, nome: "Área de Teste 1", pastaNorm: "01 - Área de Teste 1" },
   { id: 2, numero: 2, nome: "Área de Teste 2", pastaNorm: "02 - Área de Teste 2" },
@@ -260,6 +263,88 @@ const EH_GM = (u) => !!u && u.perfil === "GM";
 const EH_ADMIN_SUBSISTEMA = (u) => !!u && u.perfil === "Administrador Subsistema";
 // Papel operacional dentro de Gestão de Procedimentos (auditor/avaliador/ssma) — GM sempre tem todos.
 const temPapelPops = (u, papel) => EH_GM(u) || !!(u && u.permissoes && u.permissoes.papeisPops && u.permissoes.papeisPops[papel]);
+
+// Checklist com cascata: marcar uma tela (feature) libera automaticamente o Subsistema e o Grupo
+// dela (senão a tela liberada fica inacessível, escondida atrás de um Grupo/Subsistema bloqueado).
+// Marcar o Subsistema ou o Grupo direto com "✓" libera tudo abaixo; clicar de novo (já completo)
+// bloqueia tudo abaixo. "adminDe"/"papeisPops" não têm cascata — são independentes da árvore de acesso.
+// Função de módulo (não presa a um componente) para poder ser reusada tanto em Configurações
+// quanto na aba "Configurações" de dentro de cada Subsistema (ex.: Gestão de Procedimentos).
+async function alternarPermissaoUsuario(dados, setDados, usuarioLogado, email, categoria, id) {
+  const u = dados.usuarios[email];
+  const atuais = u.permissoes || permissoesDefault();
+
+  if (categoria === "adminDe") {
+    const adminDeAtual = atuais.adminDe || permissoesDefault().adminDe;
+    const novoValor = !adminDeAtual[id];
+    const permissoes = { ...atuais, adminDe: { ...adminDeAtual, [id]: novoValor } };
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
+    nd = comLog(nd, usuarioLogado, "Usuários", `Alterou administração do subsistema (${id}) para "${novoValor ? "Concedida" : "Removida"}"`, email, email);
+    setDados(nd); await salvarDados(nd);
+    return;
+  }
+
+  if (categoria === "papeisPops") {
+    const papeisAtual = atuais.papeisPops || permissoesDefault().papeisPops;
+    const novoValor = !papeisAtual[id];
+    const permissoes = { ...atuais, papeisPops: { ...papeisAtual, [id]: novoValor } };
+    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
+    nd = comLog(nd, usuarioLogado, "Usuários", `Alterou papel em Gestão de Procedimentos (${id}) para "${novoValor ? "Concedido" : "Removido"}"`, email, email);
+    setDados(nd); await salvarDados(nd);
+    return;
+  }
+
+  const grupos = { ...atuais.grupos };
+  const subsistemas = { ...atuais.subsistemas };
+  const features = { ...atuais.features };
+  let novoValor;
+
+  if (categoria === "features") {
+    novoValor = !(features[id] !== false);
+    features[id] = novoValor;
+    if (novoValor) {
+      const g = CATALOGO_GRUPOS.find((gr) => gr.subsistemas.some((s) => s.features.some((f) => f.id === id)));
+      const s = g && g.subsistemas.find((s) => s.features.some((f) => f.id === id));
+      if (s) subsistemas[s.id] = true;
+      if (g) grupos[g.id] = true;
+    }
+  } else if (categoria === "subsistemas") {
+    const g = CATALOGO_GRUPOS.find((gr) => gr.subsistemas.some((s) => s.id === id));
+    const s = g && g.subsistemas.find((sub) => sub.id === id);
+    novoValor = estadoSubsistema(atuais, s) !== "completo";
+    subsistemas[id] = novoValor;
+    if (s) s.features.forEach((f) => { features[f.id] = novoValor; });
+    if (novoValor && g) grupos[g.id] = true;
+  } else if (categoria === "grupos") {
+    const g = CATALOGO_GRUPOS.find((gr) => gr.id === id);
+    novoValor = estadoGrupo(atuais, g) !== "completo";
+    grupos[id] = novoValor;
+    if (g) g.subsistemas.forEach((s) => {
+      subsistemas[s.id] = novoValor;
+      s.features.forEach((f) => { features[f.id] = novoValor; });
+    });
+  }
+
+  const permissoes = { ...atuais, grupos, subsistemas, features };
+  let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
+  nd = comLog(nd, usuarioLogado, "Usuários", `Alterou permissão (${categoria}/${id}) para "${novoValor ? "Liberado" : "Bloqueado"}"`, email, email);
+  setDados(nd); await salvarDados(nd);
+}
+
+// Desativa/reativa o acesso de um usuário sem excluir seu histórico (diferente de "Remover", que
+// continua só do GM). Usuário desativado não consegue logar (ver tentarLoginDemo/entrar).
+async function alternarAtivoUsuario(dados, setDados, usuarioLogado, email) {
+  if (email === usuarioLogado.email) { avisar("Você não pode desativar o próprio usuário logado."); return; }
+  const u = dados.usuarios[email];
+  const novoValor = u.ativo === false; // estava desativado → reativa; senão, desativa
+  if (u.perfil === "GM" && !novoValor) {
+    const admins = Object.entries(dados.usuarios).filter(([, x]) => x.perfil === "GM" && x.ativo !== false);
+    if (admins.length === 1) { avisar("Não é possível desativar o último administrador do sistema."); return; }
+  }
+  let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, ativo: novoValor } } };
+  nd = comLog(nd, usuarioLogado, "Usuários", novoValor ? "Reativou usuário" : "Desativou usuário", email, email);
+  setDados(nd); await salvarDados(nd);
+}
 // Subsistemas que este usuário administra por delegação do GM (lista de ids); vazio para
 // qualquer perfil que não seja "Administrador Subsistema" — GM não precisa disso, já tem acesso total.
 const subsistemasAdministradosPor = (u) => {
@@ -1133,6 +1218,121 @@ function TelaListaMestraPops({ dados }) {
           </tbody>
         </table>
       </Cartao>
+    </div>
+  );
+}
+
+// Configurações do Subsistema Gestão de Procedimentos — só GM ou administrador delegado.
+// Parâmetros (validade/alertas) + tabela de acessos: TODO usuário cadastrado no AURA 360° aparece
+// aqui, para o administrador decidir quem tem acesso, quais telas e quais papéis (Auditor/
+// Avaliador/SSMA) dentro deste Subsistema — igual ao padrão já usado em Compras e Cadastros.
+function TelaConfigPops({ dados, setDados, usuario }) {
+  const [aba, setAba] = useState("parametros"); // "parametros" | "usuarios"
+  const cfgAtual = dados.popsConfig || POPS_CONFIG_INICIAL;
+  const [validadeDias, setValidadeDias] = useState(cfgAtual.validadeDias);
+  const [pendenteDias, setPendenteDias] = useState(cfgAtual.pendenteRevisaoDias);
+  const [alertasDias, setAlertasDias] = useState((cfgAtual.alertasDias || []).join(", "));
+
+  const salvarParametros = async () => {
+    const popsConfig = {
+      validadeDias: Math.max(1, parseInt(validadeDias, 10) || cfgAtual.validadeDias),
+      pendenteRevisaoDias: Math.max(1, parseInt(pendenteDias, 10) || cfgAtual.pendenteRevisaoDias),
+      alertasDias: alertasDias.split(",").map((x) => parseInt(x.trim(), 10)).filter(Boolean).sort((a, b) => b - a),
+    };
+    let nd = { ...dados, popsConfig };
+    nd = comLog(nd, usuario, "Procedimentos", "Atualizou configuração de Gestão de Procedimentos", JSON.stringify(popsConfig), "");
+    setDados(nd); await salvarDados(nd);
+    avisar("Configuração salva.");
+  };
+
+  const sub = CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).find((s) => s.id === "POPS");
+  const usuariosComuns = Object.entries(dados.usuarios).filter(([, u]) => !EH_GM(u));
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Configurações — Gestão de Procedimentos</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>Parâmetros do Subsistema e quem tem acesso a ele — visível só para GM e administradores delegados deste Subsistema.</p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
+        {[["parametros", "Parâmetros"], ["usuarios", "Usuários e Acessos"]].map(([id, rot]) => (
+          <button key={id} onClick={() => setAba(id)} style={{
+            padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
+            background: aba === id ? CORES.azul : CORES.cinzaClaro, color: aba === id ? "#fff" : CORES.azul,
+          }}>{rot}</button>
+        ))}
+      </div>
+
+      {aba === "parametros" && (
+        <Cartao style={{ maxWidth: 560 }}>
+          <Campo label="Validade dos POPs (dias) — padrão 365"><input type="number" style={inputStyle} value={validadeDias} onChange={(e) => setValidadeDias(e.target.value)} /></Campo>
+          <div style={{ height: 10 }} />
+          <Campo label='Janela "Pendente de Revisão" no Painel (dias antes do vencimento) — padrão 45'><input type="number" style={inputStyle} value={pendenteDias} onChange={(e) => setPendenteDias(e.target.value)} /></Campo>
+          <div style={{ height: 10 }} />
+          <Campo label="Alertas por e-mail (dias antes, separados por vírgula)"><input style={inputStyle} value={alertasDias} onChange={(e) => setAlertasDias(e.target.value)} /></Campo>
+          <Botao style={{ marginTop: 14 }} onClick={salvarParametros}>Salvar</Botao>
+        </Cartao>
+      )}
+
+      {aba === "usuarios" && (
+        <div>
+          <p style={{ fontSize: 12.5, color: CORES.cinza, margin: "0 0 12px" }}>Todo usuário cadastrado no AURA 360° Planta aparece aqui. GM tem acesso total e não precisa ser listado.</p>
+          <Cartao style={{ padding: 0, overflow: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 760 }}>
+              <thead><tr>
+                {["Nome", "E-mail", "Acesso ao Subsistema", "Papéis", "Status"].map((h) => (
+                  <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {usuariosComuns.map(([email, u]) => {
+                  const perm = u.permissoes || permissoesDefault();
+                  const liberado = !!perm.subsistemas.POPS;
+                  return (
+                    <tr key={email}>
+                      <td style={tdPops}>{u.nome}</td>
+                      <td style={tdPops}>{email}</td>
+                      <td style={tdPops}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: CORES.azul, fontWeight: 700, cursor: "pointer" }}>
+                          <CheckboxTriEstado estado={estadoSubsistema(perm, sub)} onChange={() => alternarPermissaoUsuario(dados, setDados, usuario, email, "subsistemas", "POPS")} />
+                          Acesso liberado
+                        </label>
+                        {liberado && sub.features.length > 0 && (
+                          <div style={{ marginTop: 4, marginLeft: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+                            {sub.features.map((f) => (
+                              <label key={f.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: CORES.cinza, cursor: "pointer" }}>
+                                <input type="checkbox" checked={perm.features[f.id] !== false} onChange={() => alternarPermissaoUsuario(dados, setDados, usuario, email, "features", f.id)}
+                                  style={{ width: 13, height: 13, accentColor: CORES.laranja }} />
+                                {f.nome}
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td style={tdPops}>
+                        {liberado ? (
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                            {[["auditor", "Auditor"], ["avaliador", "Avaliador"], ["ssma", "SSMA"]].map(([id, rot]) => (
+                              <label key={id} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
+                                <input type="checkbox" checked={!!(perm.papeisPops && perm.papeisPops[id])} onChange={() => alternarPermissaoUsuario(dados, setDados, usuario, email, "papeisPops", id)}
+                                  style={{ width: 13, height: 13, accentColor: CORES.laranja }} />
+                                {rot}
+                              </label>
+                            ))}
+                          </div>
+                        ) : <span style={{ fontSize: 11.5, color: CORES.cinza, fontStyle: "italic" }}>Libere o acesso para atribuir papéis.</span>}
+                      </td>
+                      <td style={tdPops}>
+                        <Botao tipo={u.ativo === false ? "contorno" : "perigo"} style={{ padding: "4px 10px", fontSize: 12 }} disabled={email === usuario.email}
+                          onClick={() => alternarAtivoUsuario(dados, setDados, usuario, email)}>{u.ativo === false ? "Desativado — Reativar" : "Ativo — Desativar"}</Botao>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {usuariosComuns.length === 0 && <tr><td colSpan={5} style={{ ...tdPops, textAlign: "center", color: CORES.cinza }}>Nenhum usuário cadastrado ainda (além do GM).</td></tr>}
+              </tbody>
+            </table>
+          </Cartao>
+        </div>
+      )}
     </div>
   );
 }
@@ -2587,85 +2787,12 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
   // Checklist de permissões (Grupos/Subsistemas/Funcionalidades) — só GM edita.
   // Sem acesso ao Grupo/Subsistema: fica visível porém desabilitado para o usuário.
   // Dentro de um Subsistema já acessível: funcionalidades sem permissão ficam ocultas.
-  // Checklist com cascata: marcar uma tela (feature) libera automaticamente o Subsistema e o Grupo
-  // dela (senão a tela liberada fica inacessível, escondida atrás de um Grupo/Subsistema bloqueado).
-  // Marcar o Subsistema ou o Grupo direto com "✓" libera tudo abaixo; clicar de novo (já completo)
-  // bloqueia tudo abaixo. "adminDe" não tem cascata — é independente da árvore de acesso.
-  const alternarPermissao = async (email, categoria, id) => {
-    const u = dados.usuarios[email];
-    const atuais = u.permissoes || permissoesDefault();
+  // Implementação (com cascata) mora em alternarPermissaoUsuario, função de módulo reusada também
+  // pela aba "Configurações" de dentro de cada Subsistema (ex.: Gestão de Procedimentos).
+  const alternarPermissao = (email, categoria, id) => alternarPermissaoUsuario(dados, setDados, usuario, email, categoria, id);
 
-    if (categoria === "adminDe") {
-      const adminDeAtual = atuais.adminDe || permissoesDefault().adminDe;
-      const novoValor = !adminDeAtual[id];
-      const permissoes = { ...atuais, adminDe: { ...adminDeAtual, [id]: novoValor } };
-      let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
-      nd = comLog(nd, usuario, "Usuários", `Alterou administração do subsistema (${id}) para "${novoValor ? "Concedida" : "Removida"}"`, email, email);
-      setDados(nd); await salvarDados(nd);
-      return;
-    }
-
-    if (categoria === "papeisPops") {
-      const papeisAtual = atuais.papeisPops || permissoesDefault().papeisPops;
-      const novoValor = !papeisAtual[id];
-      const permissoes = { ...atuais, papeisPops: { ...papeisAtual, [id]: novoValor } };
-      let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
-      nd = comLog(nd, usuario, "Usuários", `Alterou papel em Gestão de Procedimentos (${id}) para "${novoValor ? "Concedido" : "Removido"}"`, email, email);
-      setDados(nd); await salvarDados(nd);
-      return;
-    }
-
-    const grupos = { ...atuais.grupos };
-    const subsistemas = { ...atuais.subsistemas };
-    const features = { ...atuais.features };
-    let novoValor;
-
-    if (categoria === "features") {
-      novoValor = !(features[id] !== false);
-      features[id] = novoValor;
-      if (novoValor) {
-        const g = CATALOGO_GRUPOS.find((gr) => gr.subsistemas.some((s) => s.features.some((f) => f.id === id)));
-        const s = g && g.subsistemas.find((s) => s.features.some((f) => f.id === id));
-        if (s) subsistemas[s.id] = true;
-        if (g) grupos[g.id] = true;
-      }
-    } else if (categoria === "subsistemas") {
-      const g = CATALOGO_GRUPOS.find((gr) => gr.subsistemas.some((s) => s.id === id));
-      const s = g && g.subsistemas.find((sub) => sub.id === id);
-      novoValor = estadoSubsistema(atuais, s) !== "completo";
-      subsistemas[id] = novoValor;
-      if (s) s.features.forEach((f) => { features[f.id] = novoValor; });
-      if (novoValor && g) grupos[g.id] = true;
-    } else if (categoria === "grupos") {
-      const g = CATALOGO_GRUPOS.find((gr) => gr.id === id);
-      novoValor = estadoGrupo(atuais, g) !== "completo";
-      grupos[id] = novoValor;
-      if (g) g.subsistemas.forEach((s) => {
-        subsistemas[s.id] = novoValor;
-        s.features.forEach((f) => { features[f.id] = novoValor; });
-      });
-    }
-
-    const permissoes = { ...atuais, grupos, subsistemas, features };
-    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
-    nd = comLog(nd, usuario, "Usuários", `Alterou permissão (${categoria}/${id}) para "${novoValor ? "Liberado" : "Bloqueado"}"`, email, email);
-    setDados(nd); await salvarDados(nd);
-  };
-
-  // Desativa/reativa o acesso de um usuário sem excluir seu histórico (diferente de "Remover",
-  // que continua só do GM). Usuário desativado não consegue logar (ver tentarLoginDemo/entrar).
-  const alternarAtivo = async (email) => {
-    if (email === usuario.email) { avisar("Você não pode desativar o próprio usuário logado."); return; }
-    const u = dados.usuarios[email];
-    const novoValor = u.ativo === false; // estava desativado → reativa; senão, desativa
-    if (u.perfil === "GM" && !novoValor) {
-      const admins = Object.entries(dados.usuarios).filter(([, x]) => x.perfil === "GM" && x.ativo !== false);
-      if (admins.length === 1) { avisar("Não é possível desativar o último administrador do sistema."); return; }
-    }
-    let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, ativo: novoValor } } };
-    nd = comLog(nd, usuario, "Usuários", novoValor ? "Reativou usuário" : "Desativou usuário", email, email);
-    setDados(nd); await salvarDados(nd);
-  };
+  // Implementação mora em alternarAtivoUsuario (função de módulo, mesmo motivo acima).
+  const alternarAtivo = (email) => alternarAtivoUsuario(dados, setDados, usuario, email);
 
   // Cadastro simplificado usado por um administrador de Subsistema (não-GM): o novo usuário
   // entra como "Usuário Comum", sem acesso a nada além do(s) Subsistema(s) que esse administrador
@@ -3928,7 +4055,11 @@ function App() {
     { id: "LISTA_MESTRA", rotulo: "Lista Mestra", icone: "📋", feature: "TELA_POPS_LISTA_MESTRA" },
   ];
   const MENU_POPS_VISIVEL = ehGM ? MENU_POPS : MENU_POPS.filter((m) => permissoesUsuario.features[m.feature] !== false);
-  const itensPops = [{ id: "PAINEL", rotulo: "Painel", icone: "📊" }, ...MENU_POPS_VISIVEL];
+  // Configurações do próprio Subsistema (parâmetros + quem tem acesso) — só GM ou administrador
+  // delegado de Gestão de Procedimentos enxerga, igual ao padrão de Compras e Cadastros.
+  const souAdminDePops = ehGM || subsistemasQueAdministroApp.includes("POPS");
+  const MENU_ADMIN_POPS = [{ id: "CONFIGURACOES", rotulo: "Configurações", icone: "⚙️" }];
+  const itensPops = [{ id: "PAINEL", rotulo: "Painel", icone: "📊" }, ...MENU_POPS_VISIVEL, ...(souAdminDePops ? MENU_ADMIN_POPS : [])];
 
   // Telas que devem ocupar a tela toda (sem a faixa de 80vw central, com apenas uma margem fina):
   // os Subsistemas nativos (sidebar própria) e Configurações — ganham mais espaço útil sem a
@@ -3949,7 +4080,7 @@ function App() {
 
   // Trilha de navegação (breadcrumb) — reflete onde o usuário está dentro do portal
   const ROTULOS_TELA_ADMIN = { MENU: "Painel", PAINEL: "Painel", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios", MATERIAIS: "Materiais", REGISTROS: "Registros (Auditoria)", RESPONSAVEIS: "Administradores Responsáveis" };
-  const ROTULOS_TELA_POPS = { MENU: "Painel", PAINEL: "Painel", PROCEDIMENTOS: "Procedimentos", SSMA: "SSMA", LISTA_MESTRA: "Lista Mestra" };
+  const ROTULOS_TELA_POPS = { MENU: "Painel", PAINEL: "Painel", PROCEDIMENTOS: "Procedimentos", SSMA: "SSMA", LISTA_MESTRA: "Lista Mestra", CONFIGURACOES: "Configurações" };
   const ROTULOS_ABA_CONFIG = { usuarios: "Usuários", registros: "Registros (Auditoria)", sobre: "Sobre" };
   const irParaHome = () => { setArea(null); setTela("MENU"); setAppAdmin(null); setSistemaEmbutido(null); };
   const trilha = (() => {
@@ -4056,6 +4187,7 @@ function App() {
               {tela === "PROCEDIMENTOS" && <TelaProcedimentosPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
               {tela === "SSMA" && <TelaSSMAPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
               {tela === "LISTA_MESTRA" && <TelaListaMestraPops dados={dados} />}
+              {tela === "CONFIGURACOES" && souAdminDePops && <TelaConfigPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
             </div>
           </div>
         )}
