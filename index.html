@@ -90,8 +90,8 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.6.0";
-const VERSAO_DATA = "2026-08-25"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
+const VERSAO_APP = "1.6.1";
+const VERSAO_DATA = "2026-08-26"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
@@ -748,19 +748,57 @@ function CartoesResumoPainel({ cartoes }) {
     </div>
   );
 }
-function TelaPainelCompras({ dados }) {
+// Lista compacta e somente-leitura das solicitações do próprio usuário — cabe no Painel sem
+// disputar espaço com os cartões de resumo porque rola dentro de uma altura fixa.
+function ListaMinhasSolicitacoesPainel({ itens, colunas }) {
+  if (itens.length === 0) return <p style={{ color: CORES.cinza, fontSize: 13 }}>Nenhuma solicitação sua ainda.</p>;
+  return (
+    <div style={{ maxHeight: 220, overflowY: "auto", border: `1px solid ${CORES.cinzaClaro}`, borderRadius: 8 }}>
+      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12.5 }}>
+        <thead style={{ position: "sticky", top: 0 }}>
+          <tr>{colunas.map((c) => <th key={c.rotulo} style={{ padding: "6px 8px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{c.rotulo}</th>)}</tr>
+        </thead>
+        <tbody>
+          {itens.map((it) => (
+            <tr key={it.id}>
+              {colunas.map((c) => <td key={c.rotulo} style={{ padding: "6px 8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, color: CORES.azul }}>{c.valor(it)}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function TelaPainelCompras({ dados, usuario }) {
   const compras = dados.compras || [];
   const cadastros = dados.cadastros || [];
   const cartoesCompras = [...resumoSolicitacoesPainel(compras), { rotulo: "Itens Aguardando Retirada", valor: compras.filter((c) => c.entregue && !c.recebido).length, cor: "#b45309" }];
   const cartoesCadastros = resumoSolicitacoesPainel(cadastros);
+  const minhasCompras = compras.filter((c) => c.email === usuario.email).sort((a, b) => (b.dataHora || "").localeCompare(a.dataHora || ""));
+  const minhasCadastros = cadastros.filter((c) => c.email === usuario.email).sort((a, b) => (b.dataHora || "").localeCompare(a.dataHora || ""));
   return (
     <div>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Painel</h2>
       <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 20px" }}>Visão geral de Compras e Cadastros.</p>
+
       <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>Solicitações de Compra</h3>
       <CartoesResumoPainel cartoes={cartoesCompras} />
-      <h3 style={{ margin: "24px 0 10px", color: CORES.azul, fontSize: 15 }}>Solicitações de Cadastro</h3>
+      <p style={{ margin: "16px 0 6px", fontSize: 12.5, color: CORES.cinza, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Minhas solicitações de compra</p>
+      <ListaMinhasSolicitacoesPainel itens={minhasCompras} colunas={[
+        { rotulo: "Data/Hora", valor: (c) => c.dataHora },
+        { rotulo: "Cód. / Descrição", valor: (c) => `${c.codigo} — ${c.descricao}` },
+        { rotulo: "Status", valor: (c) => (c.cancelado ? "Cancelado" : rotuloStatusCompra(c)) },
+      ]} />
+
+      <h3 style={{ margin: "28px 0 10px", color: CORES.azul, fontSize: 15 }}>Solicitações de Cadastro</h3>
       <CartoesResumoPainel cartoes={cartoesCadastros} />
+      <p style={{ margin: "16px 0 6px", fontSize: 12.5, color: CORES.cinza, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Minhas solicitações de cadastro</p>
+      <ListaMinhasSolicitacoesPainel itens={minhasCadastros} colunas={[
+        { rotulo: "Data/Hora", valor: (c) => c.dataHora },
+        { rotulo: "Descrição", valor: (c) => c.descricao },
+        { rotulo: "Tipo", valor: (c) => c.tipo || "—" },
+        { rotulo: "Status", valor: (c) => statusDe(c) },
+      ]} />
     </div>
   );
 }
@@ -1950,14 +1988,20 @@ function TelaMateriais({ dados, setDados, usuario }) {
 
   // Formato oficial do MateriaisDeCompra.csv:
   //   delimitador ";" | Coluna A = "Cód Mat" | Coluna B = "Descrição Mat em Uso" | Coluna H = "UM Compra Padrão"
+  // quoteChar/escapeChar acima usam um caractere de controle (\x01) em vez de `"` \u2014 o parser n\u00e3o
+  // trata `"` como delimitador de campo, ent\u00e3o um CSV com campos entre aspas ("padr\u00e3o" quando o
+  // texto tem `;`) chega aqui com as aspas literais coladas no valor. S\u00f3 remove quando o campo
+  // inteiro est\u00e1 entre aspas (come\u00e7a E termina com aspas) \u2014 preserva um `"` de polegada isolado
+  // no fim de uma descri\u00e7\u00e3o (ex.: MANGUEIRA 2").
+  const tirarAspas = (s) => (s.length > 1 && /^["\u201c]/.test(s) && /["\u201d]$/.test(s)) ? s.slice(1, -1) : s;
   const interpretar = (res) => {
     const norm = (s) => (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
     return res.data.map((r) => {
       const chaves = Object.keys(r);
       const achar = (alvos, indice) => {
         const k = chaves.find((c) => alvos.includes(norm(c)));
-        if (k !== undefined) return String(r[k] ?? "").trim();
-        return chaves[indice] !== undefined ? String(r[chaves[indice]] ?? "").trim() : "";
+        const bruto = k !== undefined ? String(r[k] ?? "") : (chaves[indice] !== undefined ? String(r[chaves[indice]] ?? "") : "");
+        return tirarAspas(bruto.trim());
       };
       return {
         codigo: achar(["codmat", "codigo", "codigomaterial", "codmaterial", "coditem"], 0),
@@ -2744,21 +2788,21 @@ function TelaAdministradoresResponsaveis({ dados, setDados, usuario }) {
 // Responsáveis): nenhuma delas é configuração de plataforma, mas todas são admin-only, então
 // moram juntas aqui, igual ao padrão já usado em Gestão de Procedimentos.
 function TelaConfigCompras({ dados, setDados, usuario }) {
-  const [aba, setAba] = useState("materiais"); // "materiais" | "responsaveis" | "registros"
+  const [aba, setAba] = useState("responsaveis"); // "responsaveis" | "materiais" | "registros"
   return (
     <div>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Configurações — Compras e Cadastros</h2>
       <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>Visível só para GM e administradores delegados deste Subsistema.</p>
       <div style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
-        {[["materiais", "Materiais"], ["responsaveis", "Administradores Responsáveis"], ["registros", "Registros (Auditoria)"]].map(([id, rot]) => (
+        {[["responsaveis", "Usuários"], ["materiais", "Materiais"], ["registros", "Auditoria"]].map(([id, rot]) => (
           <button key={id} onClick={() => setAba(id)} style={{
             padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
             background: aba === id ? CORES.azul : CORES.cinzaClaro, color: aba === id ? "#fff" : CORES.azul,
           }}>{rot}</button>
         ))}
       </div>
-      {aba === "materiais" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuario} />}
       {aba === "responsaveis" && <TelaAdministradoresResponsaveis dados={dados} setDados={setDados} usuario={usuario} />}
+      {aba === "materiais" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuario} />}
       {aba === "registros" && <TelaAuditoria dados={dados} categoriasVisiveis={CATEGORIAS_POR_SUBSISTEMA.COMPRAS} />}
     </div>
   );
@@ -4225,7 +4269,7 @@ function App() {
             <SidebarAdministrativo itens={itensAdmin} telaAtual={tela === "MENU" ? "PAINEL" : tela} aoNavegar={(id) => setTela(id)} aoVoltarPortal={() => setAppAdmin(null)} />
 
             <div style={{ minWidth: 0 }}>
-              {(tela === "MENU" || tela === "PAINEL") && <TelaPainelCompras dados={dados} />}
+              {(tela === "MENU" || tela === "PAINEL") && <TelaPainelCompras dados={dados} usuario={usuarioAtual} />}
               {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "RELATORIOS" && souAdminDeCompras && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
