@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.5.0";
+const VERSAO_APP = "1.6.0";
 const VERSAO_DATA = "2026-08-25"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -205,10 +205,11 @@ const CATALOGO_GRUPOS = [
     subsistemas: [
       {
         id: "COMPRAS", nome: "Compras e Cadastros", externo: false,
+        // Relatórios não entra aqui: passou a ser admin-only (só GM/administrador do Subsistema),
+        // não é mais uma tela que se libera/bloqueia por usuário comum.
         features: [
           { id: "TELA_COMPRAS", nome: "Solicitação de Compras" },
           { id: "TELA_CADASTROS", nome: "Solicitação de Cadastros" },
-          { id: "TELA_RELATORIOS", nome: "Relatórios de Compras / Cadastros" },
         ],
       },
     ],
@@ -233,7 +234,7 @@ const CATALOGO_GRUPOS = [
 const permissoesDefault = () => ({
   grupos: { ADMIN: true, SEG: false, OPER: false },
   subsistemas: { COMPRAS: true, POPS: false },
-  features: { TELA_COMPRAS: true, TELA_CADASTROS: true, TELA_RELATORIOS: true },
+  features: { TELA_COMPRAS: true, TELA_CADASTROS: true },
   adminDe: { COMPRAS: false },
   // Papéis dentro de Gestão de Procedimentos — multiescolha: um usuário pode acumular vários ao
   // mesmo tempo (ex.: Administrador + Auditor + Avaliador). Nenhum marcado = sem acesso ao
@@ -727,29 +728,39 @@ const linhaVazia = () => ({ codigo: "", descricao: "", quantidade: "", unidade: 
 
 // Painel — primeira tela ao entrar no Subsistema (antes de escolher Compras/Cadastros/Relatórios),
 // com indicadores gerais. Mesmo padrão visual de cartão usado na Home do portal.
+// Resumo padrão (total/pendentes/concluídas/canceladas) de uma lista de solicitações — reusado
+// separadamente para Compras e para Cadastros, em vez de um único total misturando os dois.
+const resumoSolicitacoesPainel = (lista) => [
+  { rotulo: "Total de Solicitações", valor: lista.length, cor: CORES.azul },
+  { rotulo: "Pendentes", valor: lista.filter((c) => !c.concluido && !c.cancelado).length, cor: CORES.laranja },
+  { rotulo: "Concluídas", valor: lista.filter((c) => c.concluido).length, cor: "#0f6b3f" },
+  { rotulo: "Canceladas", valor: lista.filter((c) => c.cancelado).length, cor: "#9d174d" },
+];
+function CartoesResumoPainel({ cartoes }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
+      {cartoes.map((c) => (
+        <div key={c.rotulo} style={{ background: "#fff", border: `1px solid ${CORES.cinzaClaro}`, borderRadius: 10, padding: "18px 16px", borderTop: `4px solid ${c.cor}` }}>
+          <div style={{ fontSize: 30, fontWeight: 800, color: c.cor }}>{c.valor}</div>
+          <div style={{ fontSize: 12, color: CORES.cinza, textTransform: "uppercase", letterSpacing: ".04em", marginTop: 4 }}>{c.rotulo}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
 function TelaPainelCompras({ dados }) {
   const compras = dados.compras || [];
   const cadastros = dados.cadastros || [];
-  const todos = [...compras, ...cadastros];
-  const cartoes = [
-    { rotulo: "Total de Solicitações", valor: todos.length, cor: CORES.azul },
-    { rotulo: "Pendentes", valor: todos.filter((c) => !c.concluido && !c.cancelado).length, cor: CORES.laranja },
-    { rotulo: "Concluídas", valor: todos.filter((c) => c.concluido).length, cor: "#0f6b3f" },
-    { rotulo: "Canceladas", valor: todos.filter((c) => c.cancelado).length, cor: "#9d174d" },
-    { rotulo: "Itens Aguardando Retirada", valor: compras.filter((c) => c.entregue && !c.recebido).length, cor: "#b45309" },
-  ];
+  const cartoesCompras = [...resumoSolicitacoesPainel(compras), { rotulo: "Itens Aguardando Retirada", valor: compras.filter((c) => c.entregue && !c.recebido).length, cor: "#b45309" }];
+  const cartoesCadastros = resumoSolicitacoesPainel(cadastros);
   return (
     <div>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Painel</h2>
       <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 20px" }}>Visão geral de Compras e Cadastros.</p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
-        {cartoes.map((c) => (
-          <div key={c.rotulo} style={{ background: "#fff", border: `1px solid ${CORES.cinzaClaro}`, borderRadius: 10, padding: "18px 16px", borderTop: `4px solid ${c.cor}` }}>
-            <div style={{ fontSize: 30, fontWeight: 800, color: c.cor }}>{c.valor}</div>
-            <div style={{ fontSize: 12, color: CORES.cinza, textTransform: "uppercase", letterSpacing: ".04em", marginTop: 4 }}>{c.rotulo}</div>
-          </div>
-        ))}
-      </div>
+      <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>Solicitações de Compra</h3>
+      <CartoesResumoPainel cartoes={cartoesCompras} />
+      <h3 style={{ margin: "24px 0 10px", color: CORES.azul, fontSize: 15 }}>Solicitações de Cadastro</h3>
+      <CartoesResumoPainel cartoes={cartoesCadastros} />
     </div>
   );
 }
@@ -2728,6 +2739,31 @@ function TelaAdministradoresResponsaveis({ dados, setDados, usuario }) {
   );
 }
 
+// Configurações do Subsistema Compras e Cadastros — só GM ou administrador delegado. Reúne o que
+// antes eram 3 telas soltas na sidebar (Materiais, Registros/Auditoria, Administradores
+// Responsáveis): nenhuma delas é configuração de plataforma, mas todas são admin-only, então
+// moram juntas aqui, igual ao padrão já usado em Gestão de Procedimentos.
+function TelaConfigCompras({ dados, setDados, usuario }) {
+  const [aba, setAba] = useState("materiais"); // "materiais" | "responsaveis" | "registros"
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Configurações — Compras e Cadastros</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>Visível só para GM e administradores delegados deste Subsistema.</p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
+        {[["materiais", "Materiais"], ["responsaveis", "Administradores Responsáveis"], ["registros", "Registros (Auditoria)"]].map(([id, rot]) => (
+          <button key={id} onClick={() => setAba(id)} style={{
+            padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
+            background: aba === id ? CORES.azul : CORES.cinzaClaro, color: aba === id ? "#fff" : CORES.azul,
+          }}>{rot}</button>
+        ))}
+      </div>
+      {aba === "materiais" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuario} />}
+      {aba === "responsaveis" && <TelaAdministradoresResponsaveis dados={dados} setDados={setDados} usuario={usuario} />}
+      {aba === "registros" && <TelaAuditoria dados={dados} categoriasVisiveis={CATEGORIAS_POR_SUBSISTEMA.COMPRAS} />}
+    </div>
+  );
+}
+
 function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
   const ehGM = usuario.perfil === "GM";
   const subsistemasQueAdministro = subsistemasAdministradosPor(usuario);
@@ -4055,7 +4091,6 @@ function App() {
   const MENU = [
     { id: "COMPRAS", rotulo: "Solicitação de Compras", icone: "🛒", desc: "Requisite itens da base de materiais", feature: "TELA_COMPRAS" },
     { id: "CADASTROS", rotulo: "Solicitação de Cadastros", icone: "📋", desc: "Solicite cadastro de novos materiais", feature: "TELA_CADASTROS" },
-    { id: "RELATORIOS", rotulo: "Relatórios de Compras / Cadastros", icone: "📊", desc: "Consulte, filtre, conclua e exporte", feature: "TELA_RELATORIOS" },
   ];
   // Funcionalidades sem permissão ficam OCULTAS (o usuário já está dentro de um Subsistema ao qual tem acesso)
   const ehGM = EH_GM(usuarioAtual);
@@ -4063,14 +4098,14 @@ function App() {
   const souAdminDeAlgumSubsistema = subsistemasQueAdministroApp.length > 0;
   const permissoesUsuario = usuarioAtual.permissoes || permissoesDefault();
   const MENU_VISIVEL = ehGM ? MENU : MENU.filter((m) => permissoesUsuario.features[m.feature] !== false);
-  // Ferramentas administrativas do próprio Subsistema Compras e Cadastros (Materiais, Registros de
-  // auditoria do Subsistema, Administradores Responsáveis) — moram AQUI, dentro do Subsistema, e não
-  // em Configurações (que é só a plataforma AURA 360° como um todo). Só GM ou quem administra
-  // Compras e Cadastros por delegação enxerga essas telas.
+  // Ferramentas administrativas do próprio Subsistema Compras e Cadastros — moram AQUI, dentro do
+  // Subsistema, e não em Configurações (que é só a plataforma AURA 360° como um todo). Só GM ou
+  // quem administra Compras e Cadastros por delegação enxerga essas telas. Materiais, Registros
+  // (Auditoria) e Administradores Responsáveis ficam juntos dentro de Configurações — nenhuma das
+  // três é vista por um usuário comum, então não precisam de itens próprios na sidebar.
   const MENU_ADMIN_COMPRAS = [
-    { id: "MATERIAIS", rotulo: "Materiais", icone: "🔄" },
-    { id: "REGISTROS", rotulo: "Registros (Auditoria)", icone: "📜" },
-    { id: "RESPONSAVEIS", rotulo: "Administradores Responsáveis", icone: "👤" },
+    { id: "RELATORIOS", rotulo: "Relatórios de Compras / Cadastros", icone: "📊" },
+    { id: "CONFIGURACOES", rotulo: "Configurações", icone: "⚙️" },
   ];
   const souAdminDeCompras = ehGM || subsistemasQueAdministroApp.includes("COMPRAS");
   // Painel é a primeira tela do Subsistema (antes de Solicitação de Compras/Cadastros/Relatórios) —
@@ -4111,7 +4146,7 @@ function App() {
   };
 
   // Trilha de navegação (breadcrumb) — reflete onde o usuário está dentro do portal
-  const ROTULOS_TELA_ADMIN = { MENU: "Painel", PAINEL: "Painel", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios", MATERIAIS: "Materiais", REGISTROS: "Registros (Auditoria)", RESPONSAVEIS: "Administradores Responsáveis" };
+  const ROTULOS_TELA_ADMIN = { MENU: "Painel", PAINEL: "Painel", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios", CONFIGURACOES: "Configurações" };
   const ROTULOS_TELA_POPS = { MENU: "Painel", PAINEL: "Painel", PROCEDIMENTOS: "Procedimentos", SSMA: "SSMA", LISTA_MESTRA: "Lista Mestra", CONFIGURACOES: "Configurações" };
   const ROTULOS_ABA_CONFIG = { usuarios: "Usuários", registros: "Registros (Auditoria)", sobre: "Sobre" };
   const irParaHome = () => { setArea(null); setTela("MENU"); setAppAdmin(null); setSistemaEmbutido(null); };
@@ -4193,10 +4228,8 @@ function App() {
               {(tela === "MENU" || tela === "PAINEL") && <TelaPainelCompras dados={dados} />}
               {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
-              {tela === "RELATORIOS" && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
-              {tela === "MATERIAIS" && souAdminDeCompras && <TelaMateriais dados={dados} setDados={setDados} usuario={usuarioAtual} />}
-              {tela === "REGISTROS" && souAdminDeCompras && <TelaAuditoria dados={dados} categoriasVisiveis={CATEGORIAS_POR_SUBSISTEMA.COMPRAS} />}
-              {tela === "RESPONSAVEIS" && souAdminDeCompras && <TelaAdministradoresResponsaveis dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+              {tela === "RELATORIOS" && souAdminDeCompras && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
+              {tela === "CONFIGURACOES" && souAdminDeCompras && <TelaConfigCompras dados={dados} setDados={setDados} usuario={usuarioAtual} />}
             </div>
           </div>
         )}
