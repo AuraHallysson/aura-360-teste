@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.6.2";
+const VERSAO_APP = "1.7.0";
 const VERSAO_DATA = "2026-08-26"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -724,7 +724,7 @@ const rotuloStatusCompra = (c) => {
   return "Aguardando criação da RC";
 };
 
-const linhaVazia = () => ({ codigo: "", descricao: "", quantidade: "", unidade: "", centroCusto: "", contaContabil: "", capex: false, nomeCapex: "", observacoes: "" });
+const linhaVazia = () => ({ codigo: "", descricao: "", quantidade: "", unidade: "", centroCusto: "", contaContabil: "", capex: false, nomeCapex: "", observacoes: "", urgente: false });
 
 // Painel — primeira tela ao entrar no Subsistema (antes de escolher Compras/Cadastros/Relatórios),
 // com indicadores gerais. Mesmo padrão visual de cartão usado na Home do portal.
@@ -769,24 +769,41 @@ function ListaMinhasSolicitacoesPainel({ itens, colunas }) {
     </div>
   );
 }
-function TelaPainelCompras({ dados, usuario }) {
+function TelaPainelCompras({ dados, usuario, souAdmin }) {
   const compras = dados.compras || [];
   const cadastros = dados.cadastros || [];
   const cartoesCompras = [...resumoSolicitacoesPainel(compras), { rotulo: "Itens Aguardando Retirada", valor: compras.filter((c) => c.entregue && !c.recebido).length, cor: "#b45309" }];
   const cartoesCadastros = resumoSolicitacoesPainel(cadastros);
   const minhasCompras = compras.filter((c) => c.email === usuario.email).sort((a, b) => (b.dataHora || "").localeCompare(a.dataHora || ""));
   const minhasCadastros = cadastros.filter((c) => c.email === usuario.email).sort((a, b) => (b.dataHora || "").localeCompare(a.dataHora || ""));
+  const pendente = (c) => !c.concluido && !c.cancelado;
+  const comprasPendentes = compras.filter(pendente);
+  const cadastrosPendentes = cadastros.filter(pendente);
+  const cartoesPendencias = [
+    { rotulo: "Compras Pendentes", valor: comprasPendentes.length, cor: CORES.laranja },
+    { rotulo: "Compras Urgentes", valor: comprasPendentes.filter((c) => c.urgente).length, cor: "#b91c1c" },
+    { rotulo: "Cadastros Pendentes", valor: cadastrosPendentes.length, cor: CORES.laranja },
+    { rotulo: "Cadastros Urgentes", valor: cadastrosPendentes.filter((c) => c.urgente).length, cor: "#b91c1c" },
+  ];
   return (
     <div>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Painel</h2>
       <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 20px" }}>Visão geral de Compras e Cadastros.</p>
+
+      {souAdmin && (
+        <>
+          <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>Pendências — Relatórios de Compras / Cadastros</h3>
+          <CartoesResumoPainel cartoes={cartoesPendencias} />
+          <div style={{ height: 24 }} />
+        </>
+      )}
 
       <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>Solicitações de Compra</h3>
       <CartoesResumoPainel cartoes={cartoesCompras} />
       <p style={{ margin: "16px 0 6px", fontSize: 12.5, color: CORES.cinza, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Minhas solicitações de compra</p>
       <ListaMinhasSolicitacoesPainel itens={minhasCompras} colunas={[
         { rotulo: "Data/Hora", valor: (c) => c.dataHora },
-        { rotulo: "Cód. / Descrição", valor: (c) => `${c.codigo} — ${c.descricao}` },
+        { rotulo: "Cód. / Descrição", valor: (c) => `${c.urgente ? "🔴 " : ""}${c.codigo} — ${c.descricao}` },
         { rotulo: "Status", valor: (c) => (c.cancelado ? "Cancelado" : rotuloStatusCompra(c)) },
       ]} />
 
@@ -795,7 +812,7 @@ function TelaPainelCompras({ dados, usuario }) {
       <p style={{ margin: "16px 0 6px", fontSize: 12.5, color: CORES.cinza, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Minhas solicitações de cadastro</p>
       <ListaMinhasSolicitacoesPainel itens={minhasCadastros} colunas={[
         { rotulo: "Data/Hora", valor: (c) => c.dataHora },
-        { rotulo: "Descrição", valor: (c) => c.descricao },
+        { rotulo: "Descrição", valor: (c) => `${c.urgente ? "🔴 " : ""}${c.descricao}` },
         { rotulo: "Tipo", valor: (c) => c.tipo || "—" },
         { rotulo: "Status", valor: (c) => statusDe(c) },
       ]} />
@@ -1548,7 +1565,7 @@ function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
             <thead><tr>
               <th style={th}>Solicitante</th><th style={th}>Cód. Item •</th><th style={th}>Descrição do Item •</th>
               <th style={th}>Qtd.</th><th style={th}>Un. Medida</th><th style={th}>Centro de Custo</th><th style={th}>Conta Contábil</th>
-              <th style={{ ...th, textAlign: "center" }}>Capex</th><th style={th}>Código Capex</th><th style={th}>Observações</th><th style={th}></th>
+              <th style={{ ...th, textAlign: "center" }}>Capex</th><th style={th}>Código Capex</th><th style={{ ...th, textAlign: "center" }}>Urgente</th><th style={th}>Observações</th><th style={th}></th>
             </tr></thead>
             <tbody>
               {linhas.map((l, i) => (
@@ -1574,6 +1591,11 @@ function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
                   <td style={{ ...td, width: 130 }}>
                     <input style={{ ...inputStyle, background: l.capex ? "#fff" : CORES.cinzaClaro }} value={l.nomeCapex} disabled={!l.capex}
                       placeholder={l.capex ? "Código Capex" : "—"} onChange={(e) => mudar(i, "nomeCapex", e.target.value)} />
+                  </td>
+                  <td style={{ ...td, textAlign: "center", width: 60 }}>
+                    <input type="checkbox" checked={!!l.urgente} title="Marcar se esta compra é urgente"
+                      onChange={(e) => mudar(i, "urgente", e.target.checked)}
+                      style={{ width: 17, height: 17, accentColor: CORES.laranja, cursor: "pointer", marginTop: 8 }} />
                   </td>
                   <td style={{ ...td, minWidth: 170 }}>
                     <input style={inputStyle} value={l.observacoes} placeholder="Obs. deste item…"
@@ -1707,7 +1729,7 @@ function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
    ============================================================ */
 const cadastroVazio = () => ({
   descricao: "", unidade: "", link: "", tipo: "", fornecedor: "", partNumber: "", capex: false, nomeCapex: "", anexo: null,
-  observacoes: "", fornEsp: false, fornecedorEspecifico: "",
+  observacoes: "", fornEsp: false, fornecedorEspecifico: "", urgente: false,
   estoqueMin: "", estoqueMax: "", consumoMensal: "", estoqueDesejado: "", quantidade: "", centroCusto: "", contaContabil: "",
 });
 
@@ -1845,6 +1867,13 @@ function TelaCadastros({ dados, setDados, usuario, notificarSolicitacao }) {
               <input style={{ ...inputStyle, background: f.capex ? "#fff" : CORES.cinzaClaro }} disabled={!f.capex}
                 placeholder={f.capex ? "Código Capex" : "—"} value={f.nomeCapex} onChange={(e) => set("nomeCapex", e.target.value)} />
             </div>
+          </Campo>
+          <Campo label="Urgente">
+            <label style={{ display: "flex", alignItems: "center", gap: 8, height: 37, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!f.urgente} onChange={(e) => set("urgente", e.target.checked)}
+                style={{ width: 17, height: 17, accentColor: CORES.laranja }} />
+              <span style={{ fontSize: 13, color: CORES.azul }}>Marcar este cadastro como urgente</span>
+            </label>
           </Campo>
           <Campo label="Anexo (PDF ou DOC)">
             <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 37 }}>
@@ -2280,15 +2309,18 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
   };
 
   const colunas = modo === "Compra"
-    ? [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["codigo", "Cód."], ["descricao", "Descrição"], ["quantidade", "Qtd."], ["unidade", "Un."], ["centroCusto", "C. Custo"], ["contaContabil", "Conta"], ["nomeCapex", "Capex"], ["fornecedorEspecifico", "Forn. Específico"], ["observacoes", "Observações"]]
+    ? [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["codigo", "Cód."], ["descricao", "Descrição"], ["quantidade", "Qtd."], ["unidade", "Un."], ["centroCusto", "C. Custo"], ["contaContabil", "Conta"], ["nomeCapex", "Capex"], ["urgente", "Urgente"], ["fornecedorEspecifico", "Forn. Específico"], ["observacoes", "Observações"]]
     : [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["tipo", "Tipo"], ["fornecedor", "Fornecedor"], ["partNumber", "Part Number"]];
 
   // Colunas específicas de cada tipo de cadastro (4.x — relatório dividido por tipo)
   const colunasPorTipo = {
-    "Estoque": [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["fornecedor", "Fornecedor"], ["estoqueMin", "Est. Mín."], ["estoqueMax", "Est. Máx."], ["consumoMensal", "Consumo/Mês"], ["nomeCapex", "Capex"], ["anexo", "Anexo"], ["observacoes", "Observações"]],
-    "Estoque Sazonal": [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["fornecedor", "Fornecedor"], ["estoqueDesejado", "Est. Desejado"], ["consumoMensal", "Consumo/Mês"], ["nomeCapex", "Capex"], ["fornecedorEspecifico", "Forn. Específico"], ["anexo", "Anexo"], ["observacoes", "Observações"]],
-    "Débito Direto": [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["quantidade", "Qtd."], ["centroCusto", "C. Custo"], ["contaContabil", "Conta"], ["nomeCapex", "Capex"], ["fornecedorEspecifico", "Forn. Específico"], ["anexo", "Anexo"], ["observacoes", "Observações"]],
+    "Estoque": [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["fornecedor", "Fornecedor"], ["estoqueMin", "Est. Mín."], ["estoqueMax", "Est. Máx."], ["consumoMensal", "Consumo/Mês"], ["nomeCapex", "Capex"], ["urgente", "Urgente"], ["anexo", "Anexo"], ["observacoes", "Observações"]],
+    "Estoque Sazonal": [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["fornecedor", "Fornecedor"], ["estoqueDesejado", "Est. Desejado"], ["consumoMensal", "Consumo/Mês"], ["nomeCapex", "Capex"], ["urgente", "Urgente"], ["fornecedorEspecifico", "Forn. Específico"], ["anexo", "Anexo"], ["observacoes", "Observações"]],
+    "Débito Direto": [["dataHora", "Data/Hora"], ["solicitante", "Solicitante"], ["descricao", "Descrição"], ["unidade", "Un."], ["quantidade", "Qtd."], ["centroCusto", "C. Custo"], ["contaContabil", "Conta"], ["nomeCapex", "Capex"], ["urgente", "Urgente"], ["fornecedorEspecifico", "Forn. Específico"], ["anexo", "Anexo"], ["observacoes", "Observações"]],
   };
+  const badgeUrgente = (r) => r.urgente
+    ? <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#fff", background: "#b91c1c", whiteSpace: "nowrap" }}>🔴 Urgente</span>
+    : <span style={{ color: CORES.cinza }}>—</span>;
   const TIPOS_CADASTRO = ["Estoque", "Estoque Sazonal", "Débito Direto"];
 
   const exportarExcel = () => {
@@ -2315,6 +2347,7 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
         o["Cancelado em"] = r.canceladoEm || "";
         o["Cancelado por"] = r.canceladoPor || "";
         o["Capex"] = r.capex ? "Sim" : "Não";
+        o["Urgente"] = r.urgente ? "Sim" : "Não";
         o["Origem"] = r.origem || "";
         return o;
       });
@@ -2328,6 +2361,7 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
             o[rotulo] = k === "anexo" ? (r.anexo ? r.anexo.nome + (r.anexo.url ? " | " + r.anexo.url : "") : "") : (r[k] || "");
           });
           o["Capex"] = r.capex ? "Sim" : "Não";
+          o["Urgente"] = r.urgente ? "Sim" : "Não";
           o["Solicitado"] = r.solicitado ? "Sim" : "Não";
           o["Solicitado em"] = r.solicitadoEm || "";
           o["Concluído"] = r.concluido ? "Sim" : "Não";
@@ -2415,7 +2449,7 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
               <tr key={r.id} style={{ background: r.concluido ? "rgba(46,139,87,.06)" : r.cancelado ? "rgba(244,97,77,.07)" : "transparent" }}>
                 {colunas.map(([k]) => (
                   <td key={k} style={{ ...td, textDecoration: r.cancelado ? "line-through" : "none", opacity: r.cancelado ? 0.65 : 1 }}>
-                    {k === "observacoes" ? (
+                    {k === "urgente" ? badgeUrgente(r) : k === "observacoes" ? (
                       r.observacoes ? (
                         <div style={{ background: "rgba(244,97,77,.08)", borderLeft: `3px solid ${CORES.laranja}`, borderRadius: 4, padding: "4px 8px", fontSize: 12.5, fontStyle: "italic", color: CORES.azul, minWidth: 160, maxWidth: 260, whiteSpace: "normal" }} title={r.observacoes}>
                           💬 {r.observacoes}
@@ -2513,7 +2547,8 @@ function TelaRelatorios({ dados, setDados, usuario, notificarEtapa }) {
                       <tr key={r.id} style={{ background: r.concluido ? "rgba(46,139,87,.06)" : r.cancelado ? "rgba(244,97,77,.07)" : "transparent" }}>
                         {colunasPorTipo[tipo].map(([k]) => (
                           <td key={k} style={{ ...td, textDecoration: r.cancelado ? "line-through" : "none", opacity: r.cancelado ? 0.65 : 1 }}>
-                            {k === "anexo" ? <AnexoLink anexo={r.anexo} />
+                            {k === "urgente" ? badgeUrgente(r)
+                              : k === "anexo" ? <AnexoLink anexo={r.anexo} />
                               : k === "observacoes" ? (r.observacoes
                                 ? <div style={{ background: "rgba(244,97,77,.08)", borderLeft: `3px solid ${CORES.laranja}`, borderRadius: 4, padding: "4px 8px", fontSize: 12.5, fontStyle: "italic", color: CORES.azul, minWidth: 140, maxWidth: 240, whiteSpace: "normal" }} title={r.observacoes}>💬 {r.observacoes}</div>
                                 : <span style={{ color: CORES.cinza }}>—</span>)
@@ -4269,7 +4304,7 @@ function App() {
             <SidebarAdministrativo itens={itensAdmin} telaAtual={tela === "MENU" ? "PAINEL" : tela} aoNavegar={(id) => setTela(id)} aoVoltarPortal={() => setAppAdmin(null)} />
 
             <div style={{ minWidth: 0 }}>
-              {(tela === "MENU" || tela === "PAINEL") && <TelaPainelCompras dados={dados} usuario={usuarioAtual} />}
+              {(tela === "MENU" || tela === "PAINEL") && <TelaPainelCompras dados={dados} usuario={usuarioAtual} souAdmin={souAdminDeCompras} />}
               {tela === "COMPRAS" && <TelaCompras dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "CADASTROS" && <TelaCadastros dados={dados} setDados={setDados} usuario={usuarioAtual} notificarSolicitacao={notificarSolicitacao} />}
               {tela === "RELATORIOS" && souAdminDeCompras && <TelaRelatorios dados={dados} setDados={setDados} usuario={usuarioAtual} notificarEtapa={notificarEtapa} />}
