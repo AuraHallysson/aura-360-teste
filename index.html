@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.7.0";
+const VERSAO_APP = "1.8.0";
 const VERSAO_DATA = "2026-08-26"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -263,9 +263,14 @@ const EH_ADMIN_SUBSISTEMA = (u) => !!u && u.perfil === "Administrador Subsistema
 // Papéis dentro de Gestão de Procedimentos (Administrador/Auditor/Avaliador/SSMA/Leitor) — um
 // usuário pode ter vários ao mesmo tempo (ex.: Administrador e Auditor e Avaliador juntos). Cada
 // papel tem visibilidade/ação fixas por tela (matriz definida pelo negócio); a tela usa o nível
-// mais alto entre os papéis que o usuário tem. GM sempre tem acesso total, sem precisar marcar.
+// mais alto entre os papéis que o usuário tem.
+// GM tem acesso total (bypass) só enquanto NINGUÉM tiver o papel Administrador no Subsistema —
+// é um acesso de "bootstrap" para configurar o Subsistema do zero. No momento em que o primeiro
+// Administrador é cadastrado, o GM passa a ser tratado como Leitor aqui dentro (continua GM em
+// todo o resto do AURA 360°, e sempre pode entrar em Configurações para ajustar papéis).
 const papeisPopsDe = (u) => (u && u.permissoes && u.permissoes.papeisPops) || {};
-const temPapelPops = (u, papel) => EH_GM(u) || !!papeisPopsDe(u)[papel];
+const existeAdministradorPops = (dados) => Object.values((dados && dados.usuarios) || {}).some((u) => u.permissoes && u.permissoes.papeisPops && u.permissoes.papeisPops.administrador);
+const temPapelPops = (u, papel, dados) => (EH_GM(u) ? !existeAdministradorPops(dados) : !!papeisPopsDe(u)[papel]);
 const PAPEL_POPS_OPCOES = [
   { id: "administrador", nome: "Administrador" },
   { id: "auditor", nome: "Auditor" },
@@ -278,8 +283,8 @@ const PAPEL_POPS_PROCEDIMENTOS = { administrador: "editar", auditor: "editar", a
 const PAPEL_POPS_SSMA = { administrador: "oculto", auditor: "oculto", avaliador: "oculto", ssma: "editar", leitor: "oculto" };
 const PAPEL_POPS_LISTA_MESTRA = { administrador: "editar", auditor: "ver", avaliador: "ver", ssma: "ver", leitor: "ver" };
 const NIVEL_POPS = { oculto: 0, ver: 1, editar: 2 };
-const capacidadePops = (u, mapa) => {
-  if (EH_GM(u)) return "editar";
+const capacidadePops = (u, mapa, dados) => {
+  if (EH_GM(u)) return existeAdministradorPops(dados) ? (mapa.leitor || "oculto") : "editar";
   const papeis = papeisPopsDe(u);
   let melhor = "oculto";
   for (const p of Object.keys(mapa)) {
@@ -972,12 +977,12 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
   const [textoObs, setTextoObs] = useState("");
   const [avaliadorEsc, setAvaliadorEsc] = useState("");
 
-  const meAuditor = capacidadePops(usuario, PAPEL_POPS_PROCEDIMENTOS) === "editar";
-  const meSSMA = capacidadePops(usuario, PAPEL_POPS_SSMA) === "editar";
+  const meAuditor = capacidadePops(usuario, PAPEL_POPS_PROCEDIMENTOS, dados) === "editar";
+  const meSSMA = capacidadePops(usuario, PAPEL_POPS_SSMA, dados) === "editar";
   const souAuditorResp = !pop.auditorEmail || pop.auditorEmail === usuario.email;
   const souAvaliadorDesignado = pop.avaliadorEmail === usuario.email;
   const avaliadores = Object.entries(dados.usuarios)
-    .filter(([email, u]) => u.ativo !== false && temPapelPops(u, "avaliador"))
+    .filter(([email, u]) => u.ativo !== false && temPapelPops(u, "avaliador", dados))
     .filter(([email]) => email !== (pop.auditorEmail || usuario.email));
 
   const rodar = async (fn) => { try { await fn(); } catch (e) { avisar(e.message || String(e)); } };
@@ -1091,7 +1096,7 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
           ) : (
             <div style={{ marginTop: 8 }}>
               <span style={{ fontSize: 13, color: CORES.cinza }}>Aguardando avaliação{pop.avaliadorEmail ? ` de ${dados.usuarios[pop.avaliadorEmail]?.nome || pop.avaliadorEmail}` : ""}.</span>
-              {temPapelPops(usuario, "avaliador") && !pop.auditorEmail !== usuario.email && (
+              {temPapelPops(usuario, "avaliador", dados) && !pop.auditorEmail !== usuario.email && (
                 <Botao tipo="contorno" style={{ marginLeft: 10 }} onClick={assumirAvaliacao}>Assumir avaliação</Botao>
               )}
             </div>
@@ -1202,7 +1207,7 @@ function TelaProcedimentosPops({ dados, setDados, usuario }) {
 
 function TelaSSMAPops({ dados, setDados, usuario }) {
   const pops = (dados.pops || []).filter((p) => p.status === "AGUARDANDO_APROVACAO_SSMA");
-  const souSSMA = capacidadePops(usuario, PAPEL_POPS_SSMA) === "editar";
+  const souSSMA = capacidadePops(usuario, PAPEL_POPS_SSMA, dados) === "editar";
 
   const atualizarPop = async (popId, patch, acao, detalhe) => {
     let nd = { ...dados, pops: dados.pops.map((p) => (p.id === popId ? { ...p, ...patch } : p)) };
@@ -1349,7 +1354,7 @@ function TelaListaMestraPops({ dados }) {
 // aqui, para o administrador decidir quem tem acesso, quais telas e quais papéis (Auditor/
 // Avaliador/SSMA) dentro deste Subsistema — igual ao padrão já usado em Compras e Cadastros.
 function TelaConfigPops({ dados, setDados, usuario }) {
-  const [aba, setAba] = useState("parametros"); // "parametros" | "usuarios"
+  const [aba, setAba] = useState("usuarios"); // "usuarios" | "parametros"
   const cfgAtual = dados.popsConfig || POPS_CONFIG_INICIAL;
   const [validadeDias, setValidadeDias] = useState(cfgAtual.validadeDias);
   const [pendenteDias, setPendenteDias] = useState(cfgAtual.pendenteRevisaoDias);
@@ -1367,14 +1372,15 @@ function TelaConfigPops({ dados, setDados, usuario }) {
     avisar("Configuração salva.");
   };
 
-  const usuariosComuns = Object.entries(dados.usuarios).filter(([, u]) => !EH_GM(u));
+  const todosUsuarios = Object.entries(dados.usuarios);
+  const existeAdmin = existeAdministradorPops(dados);
 
   return (
     <div>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Configurações — Gestão de Procedimentos</h2>
       <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>Parâmetros do Subsistema e quem tem acesso a ele — visível só para GM e administradores delegados deste Subsistema.</p>
       <div style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
-        {[["parametros", "Parâmetros"], ["usuarios", "Usuários e Acessos"]].map(([id, rot]) => (
+        {[["usuarios", "Usuários e Acessos"], ["parametros", "Parâmetros"]].map(([id, rot]) => (
           <button key={id} onClick={() => setAba(id)} style={{
             padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
             background: aba === id ? CORES.azul : CORES.cinzaClaro, color: aba === id ? "#fff" : CORES.azul,
@@ -1396,9 +1402,11 @@ function TelaConfigPops({ dados, setDados, usuario }) {
       {aba === "usuarios" && (
         <div>
           <p style={{ fontSize: 12.5, color: CORES.cinza, margin: "0 0 12px" }}>
-            Todo usuário cadastrado no AURA 360° Planta aparece aqui. GM tem acesso total e não precisa ser listado.
+            Todo usuário cadastrado no AURA 360° Planta aparece aqui, inclusive o(s) GM.
             O acesso ao Subsistema é liberado pelos Papéis — sem nenhum marcado, o usuário não vê Gestão de Procedimentos.
             Um usuário pode acumular vários papéis ao mesmo tempo (ex.: Administrador e Auditor e Avaliador).
+            {" "}Enquanto nenhum Administrador estiver definido, o GM tem acesso total (modo inicial); ao cadastrar o
+            primeiro Administrador, o GM passa a ser tratado como Leitor aqui dentro.
           </p>
           <Cartao style={{ padding: 0, overflow: "auto" }}>
             <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 640 }}>
@@ -1408,32 +1416,40 @@ function TelaConfigPops({ dados, setDados, usuario }) {
                 ))}
               </tr></thead>
               <tbody>
-                {usuariosComuns.map(([email, u]) => {
+                {todosUsuarios.map(([email, u]) => {
                   const perm = u.permissoes || permissoesDefault();
                   const papeis = perm.papeisPops || permissoesDefault().papeisPops;
+                  const ehGMLinha = EH_GM(u);
                   return (
                     <tr key={email}>
-                      <td style={tdPops}>{u.nome}</td>
+                      <td style={tdPops}>{u.nome}{ehGMLinha && <span style={{ marginLeft: 6, fontSize: 10.5, color: "#fff", background: CORES.azul, borderRadius: 8, padding: "1px 7px" }}>GM</span>}</td>
                       <td style={tdPops}>{email}</td>
                       <td style={tdPops}>
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          {PAPEL_POPS_OPCOES.map((p) => (
-                            <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
-                              <input type="checkbox" checked={!!papeis[p.id]} onChange={() => alternarPapelPops(dados, setDados, usuario, email, p.id)}
-                                style={{ width: 13, height: 13, accentColor: CORES.laranja }} />
-                              {p.nome}
-                            </label>
-                          ))}
-                        </div>
+                        {ehGMLinha ? (
+                          <span style={{ fontSize: 12, color: existeAdmin ? CORES.cinza : CORES.laranja, fontStyle: "italic" }}>
+                            {existeAdmin ? "Leitor (já existe um Administrador definido)" : "Acesso total (modo inicial — nenhum Administrador definido ainda)"}
+                          </span>
+                        ) : (
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                            {PAPEL_POPS_OPCOES.map((p) => (
+                              <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
+                                <input type="checkbox" checked={!!papeis[p.id]} onChange={() => alternarPapelPops(dados, setDados, usuario, email, p.id)}
+                                  style={{ width: 13, height: 13, accentColor: CORES.laranja }} />
+                                {p.nome}
+                              </label>
+                            ))}
+                          </div>
+                        )}
                       </td>
                       <td style={tdPops}>
-                        <Botao tipo={u.ativo === false ? "contorno" : "perigo"} style={{ padding: "4px 10px", fontSize: 12 }} disabled={email === usuario.email}
+                        <Botao tipo={u.ativo === false ? "contorno" : "perigo"} style={{ padding: "4px 10px", fontSize: 12 }} disabled={email === usuario.email || ehGMLinha}
+                          title={ehGMLinha ? "GM é gerenciado em Configurações (plataforma)" : ""}
                           onClick={() => alternarAtivoUsuario(dados, setDados, usuario, email)}>{u.ativo === false ? "Desativado — Reativar" : "Ativo — Desativar"}</Botao>
                       </td>
                     </tr>
                   );
                 })}
-                {usuariosComuns.length === 0 && <tr><td colSpan={4} style={{ ...tdPops, textAlign: "center", color: CORES.cinza }}>Nenhum usuário cadastrado ainda (além do GM).</td></tr>}
+                {todosUsuarios.length === 0 && <tr><td colSpan={4} style={{ ...tdPops, textAlign: "center", color: CORES.cinza }}>Nenhum usuário cadastrado ainda.</td></tr>}
               </tbody>
             </table>
           </Cartao>
@@ -4193,17 +4209,18 @@ function App() {
 
   // Gestão de Procedimentos (Subsistema de Segurança) — telas visíveis dependem do Papel único do
   // usuário (Administrador/Auditor/Avaliador/SSMA/Leitor), não mais de um checklist de features.
-  const capProcedimentosPops = capacidadePops(usuarioAtual, PAPEL_POPS_PROCEDIMENTOS);
-  const capSSMAPops = capacidadePops(usuarioAtual, PAPEL_POPS_SSMA);
-  const capListaMestraPops = capacidadePops(usuarioAtual, PAPEL_POPS_LISTA_MESTRA);
+  const capProcedimentosPops = capacidadePops(usuarioAtual, PAPEL_POPS_PROCEDIMENTOS, dados);
+  const capSSMAPops = capacidadePops(usuarioAtual, PAPEL_POPS_SSMA, dados);
+  const capListaMestraPops = capacidadePops(usuarioAtual, PAPEL_POPS_LISTA_MESTRA, dados);
   const MENU_POPS_VISIVEL = [
     ...(capProcedimentosPops !== "oculto" ? [{ id: "PROCEDIMENTOS", rotulo: "Procedimentos", icone: "📄" }] : []),
     ...(capSSMAPops !== "oculto" ? [{ id: "SSMA", rotulo: "SSMA", icone: "🛡️" }] : []),
     ...(capListaMestraPops !== "oculto" ? [{ id: "LISTA_MESTRA", rotulo: "Lista Mestra", icone: "📋" }] : []),
   ];
   // Configurações do próprio Subsistema (parâmetros + quem tem acesso) — só GM ou quem tem o
-  // Papel "Administrador" em Gestão de Procedimentos enxerga.
-  const souAdminDePops = temPapelPops(usuarioAtual, "administrador");
+  // Papel "Administrador" em Gestão de Procedimentos enxerga. GM sempre enxerga (mesmo depois de
+  // já existir um Administrador — precisa continuar podendo ajustar papéis por aqui).
+  const souAdminDePops = ehGM || temPapelPops(usuarioAtual, "administrador", dados);
   const MENU_ADMIN_POPS = [{ id: "CONFIGURACOES", rotulo: "Configurações", icone: "⚙️" }];
   const itensPops = [{ id: "PAINEL", rotulo: "Painel", icone: "📊" }, ...MENU_POPS_VISIVEL, ...(souAdminDePops ? MENU_ADMIN_POPS : [])];
 
