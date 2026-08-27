@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.8.0";
+const VERSAO_APP = "1.8.1";
 const VERSAO_DATA = "2026-08-26"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -2965,9 +2965,6 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
   // Implementação mora em alternarAtivoUsuario (função de módulo, mesmo motivo acima).
   const alternarAtivo = (email) => alternarAtivoUsuario(dados, setDados, usuario, email);
 
-  // Implementação mora em alternarPapelPops (função de módulo, mesmo motivo acima).
-  const alternarPapel = (email, papelId) => alternarPapelPops(dados, setDados, usuario, email, papelId);
-
   // Cadastro simplificado usado por um administrador de Subsistema (não-GM): o novo usuário
   // entra como "Usuário Comum", sem acesso a nada além do(s) Subsistema(s) que esse administrador
   // administra — ele não pode conceder acesso a áreas que não são dele.
@@ -3135,7 +3132,8 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                             <strong style={{ fontSize: 11, color: CORES.laranja, textTransform: "uppercase", letterSpacing: ".05em" }}>Área Administração Subsistema</strong>
                             <p style={{ margin: "2px 0 6px", fontSize: 10.5, color: CORES.cinza }}>
                               Marque de qual(is) Subsistema(s) este usuário é administrador delegado — só pode administrar o que já está liberado acima.
-                              Gestão de Procedimentos não entra aqui: a administração dela é pelo Papel, abaixo.
+                              Gestão de Procedimentos não entra aqui: os Papéis dela (Administrador/Auditor/Avaliador/SSMA/Leitor)
+                              são atribuídos dentro do próprio Subsistema, em Configurações → Usuários e Acessos.
                             </p>
                             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                               {CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).filter((s) => s.id !== "POPS" && perm.subsistemas[s.id]).map((s) => (
@@ -3151,19 +3149,6 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                             </div>
                           </div>
                         )}
-                        <div style={{ marginTop: 4, paddingTop: 10, borderTop: `1px dashed ${CORES.cinza}` }}>
-                          <strong style={{ fontSize: 11, color: "#b45309", textTransform: "uppercase", letterSpacing: ".05em" }}>Papéis em Gestão de Procedimentos</strong>
-                          <p style={{ margin: "2px 0 4px", fontSize: 10.5, color: CORES.cinza }}>Pode acumular mais de um papel ao mesmo tempo.</p>
-                          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-                            {PAPEL_POPS_OPCOES.map((p) => (
-                              <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
-                                <input type="checkbox" checked={!!((perm.papeisPops || permissoesDefault().papeisPops)[p.id])} onChange={() => alternarPapel(email, p.id)}
-                                  style={{ width: 14, height: 14, accentColor: CORES.laranja }} />
-                                {p.nome}
-                              </label>
-                            ))}
-                          </div>
-                        </div>
                       </div>
                     </details>
                   );
