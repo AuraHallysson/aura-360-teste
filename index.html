@@ -90,8 +90,8 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.9.0";
-const VERSAO_DATA = "2026-08-26"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
+const VERSAO_APP = "1.9.1";
+const VERSAO_DATA = "2026-08-28"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
@@ -320,6 +320,7 @@ async function alternarPermissaoUsuario(dados, setDados, usuarioLogado, email, c
   const grupos = { ...atuais.grupos };
   const subsistemas = { ...atuais.subsistemas };
   const features = { ...atuais.features };
+  const adminDe = { ...(atuais.adminDe || permissoesDefault().adminDe) };
   let novoValor;
 
   if (categoria === "features") {
@@ -337,8 +338,9 @@ async function alternarPermissaoUsuario(dados, setDados, usuarioLogado, email, c
     novoValor = !subsistemas[id];
     subsistemas[id] = novoValor;
     // Ganhar acesso ao Subsistema não liga as telas dele (fica "Leitor" — só o Painel); perder o
-    // acesso desliga tudo abaixo, para não deixar telas marcadas "penduradas" sem Subsistema.
-    if (!novoValor && s) s.features.forEach((f) => { features[f.id] = false; });
+    // acesso desliga tudo abaixo, para não deixar telas marcadas "penduradas" sem Subsistema — e
+    // também não deixa a pessoa como Administrador de um Subsistema que ela não acessa mais.
+    if (!novoValor && s) { s.features.forEach((f) => { features[f.id] = false; }); adminDe[id] = false; }
     if (novoValor && g) grupos[g.id] = true;
   } else if (categoria === "grupos") {
     const g = CATALOGO_GRUPOS.find((gr) => gr.id === id);
@@ -346,11 +348,11 @@ async function alternarPermissaoUsuario(dados, setDados, usuarioLogado, email, c
     grupos[id] = novoValor;
     if (g) g.subsistemas.forEach((s) => {
       subsistemas[s.id] = novoValor;
-      if (!novoValor) s.features.forEach((f) => { features[f.id] = false; });
+      if (!novoValor) { s.features.forEach((f) => { features[f.id] = false; }); adminDe[s.id] = false; }
     });
   }
 
-  const permissoes = { ...atuais, grupos, subsistemas, features };
+  const permissoes = { ...atuais, grupos, subsistemas, features, adminDe };
   let nd = { ...dados, usuarios: { ...dados.usuarios, [email]: { ...u, permissoes } } };
   nd = comLog(nd, usuarioLogado, "Usuários", `Alterou permissão (${categoria}/${id}) para "${novoValor ? "Liberado" : "Bloqueado"}"`, email, email);
   setDados(nd); await salvarDados(nd);
@@ -590,7 +592,7 @@ const CheckboxTriEstado = ({ estado, onChange, tamanho = 15 }) => (
 );
 
 // Botão + painel suspenso (não é um pop-up de tela cheia: fica ancorado ao botão, some ao clicar
-// fora). Usado para "Permissões" e "Administra o Subsistema" em Configurações → Usuários, no lugar
+// fora). Usado para "Permissões" e "Administrador" em Configurações → Usuários, no lugar
 // de checkboxes soltos direto na linha da tabela — mantém a tabela compacta e as duas áreas com a
 // mesma formatação (botão com resumo + painel de opções).
 function DropdownMultiSelect({ rotulo, resumo, children, largura = 280 }) {
@@ -3094,7 +3096,7 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Configurações — Usuários</h2>
       <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>
         Somente usuários cadastrados aqui têm acesso ao sistema. Perfis: <strong>Usuário Comum</strong>, <strong>Administrador Subsistema</strong> (poderes
-        delegados, restritos ao(s) Subsistema(s) marcados abaixo em "Administra o Subsistema") e <strong>GM</strong> (administrador geral, acesso total).
+        delegados, restritos ao(s) Subsistema(s) marcados em "Administrador") e <strong>GM</strong> (administrador geral, acesso total).
         As senhas são armazenadas apenas como hash criptográfico — nem os administradores conseguem visualizá-las.
       </p>
 
@@ -3137,8 +3139,12 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                 ) : (() => {
                   const perm = u.permissoes || permissoesDefault();
                   const totalLiberado = CATALOGO_GRUPOS.reduce((n, g) => n + (perm.grupos[g.id] ? 1 : 0), 0);
-                  const subsistemasComAcesso = CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).filter((s) => s.id !== "POPS" && perm.subsistemas[s.id]);
-                  const totalAdminDe = subsistemasComAcesso.filter((s) => perm.adminDe && perm.adminDe[s.id]).length;
+                  const subsistemasComAcesso = CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).filter((s) => perm.subsistemas[s.id]);
+                  const ehAdminDoSubsistema = (s) => s.id === "POPS" ? !!(perm.papeisPops && perm.papeisPops.administrador) : !!(perm.adminDe && perm.adminDe[s.id]);
+                  const alternarAdminDoSubsistema = (s) => s.id === "POPS"
+                    ? alternarPapelPops(dados, setDados, usuario, email, "administrador")
+                    : alternarPermissao(email, "adminDe", s.id);
+                  const totalAdminDe = subsistemasComAcesso.filter(ehAdminDoSubsistema).length;
                   return (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
                       <DropdownMultiSelect rotulo="Permissões" resumo={`${totalLiberado}/${CATALOGO_GRUPOS.length} grupos`}>
@@ -3182,17 +3188,17 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
                         </div>
                       </DropdownMultiSelect>
                       {u.perfil === "Administrador Subsistema" && (
-                        <DropdownMultiSelect rotulo="Administra o Subsistema" resumo={subsistemasComAcesso.length === 0 ? "nenhum liberado" : `${totalAdminDe}/${subsistemasComAcesso.length}`}>
+                        <DropdownMultiSelect rotulo="Administrador" resumo={subsistemasComAcesso.length === 0 ? "nenhum liberado" : `${totalAdminDe}/${subsistemasComAcesso.length}`}>
                           <p style={{ margin: "0 0 8px", fontSize: 10.5, color: CORES.cinza, maxWidth: 240 }}>
-                            Marque de qual(is) Subsistema(s) este usuário é administrador delegado — só pode administrar o
-                            que já está liberado em "Permissões". Gestão de Procedimentos não entra aqui: os Papéis dela
-                            (Administrador/Auditor/Avaliador/SSMA/Leitor) são atribuídos dentro do próprio Subsistema, em
-                            Configurações → Usuários e Acessos.
+                            Marque de qual(is) Subsistema(s) este usuário é administrador — só aparecem aqui os Subsistemas
+                            que ele já acessa em "Permissões"; tirar o acesso a um Subsistema também remove a administração
+                            dele. Gestão de Procedimentos usa o mesmo Papel "Administrador" atribuído em Configurações →
+                            Usuários e Acessos, dentro do próprio Subsistema — marcar aqui ou lá dá no mesmo.
                           </p>
                           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                             {subsistemasComAcesso.map((s) => (
                               <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: CORES.azul, cursor: "pointer" }}>
-                                <input type="checkbox" checked={!!(perm.adminDe && perm.adminDe[s.id])} onChange={() => alternarPermissao(email, "adminDe", s.id)}
+                                <input type="checkbox" checked={ehAdminDoSubsistema(s)} onChange={() => alternarAdminDoSubsistema(s)}
                                   style={{ width: 14, height: 14, accentColor: CORES.laranja }} />
                                 {s.nome}
                               </label>
