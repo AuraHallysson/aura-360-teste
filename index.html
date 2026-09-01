@@ -90,8 +90,8 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.9.3";
-const VERSAO_DATA = "2026-08-28"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
+const VERSAO_APP = "1.10.1";
+const VERSAO_DATA = "2026-09-01"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
@@ -786,14 +786,6 @@ const linhaVazia = () => ({ codigo: "", descricao: "", quantidade: "", unidade: 
 
 // Painel — primeira tela ao entrar no Subsistema (antes de escolher Compras/Cadastros/Relatórios),
 // com indicadores gerais. Mesmo padrão visual de cartão usado na Home do portal.
-// Resumo padrão (total/pendentes/concluídas/canceladas) de uma lista de solicitações — reusado
-// separadamente para Compras e para Cadastros, em vez de um único total misturando os dois.
-const resumoSolicitacoesPainel = (lista) => [
-  { rotulo: "Total de Solicitações", valor: lista.length, cor: CORES.azul },
-  { rotulo: "Pendentes", valor: lista.filter((c) => !c.concluido && !c.cancelado).length, cor: CORES.laranja },
-  { rotulo: "Concluídas", valor: lista.filter((c) => c.concluido).length, cor: "#0f6b3f" },
-  { rotulo: "Canceladas", valor: lista.filter((c) => c.cancelado).length, cor: "#9d174d" },
-];
 function CartoesResumoPainel({ cartoes }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14 }}>
@@ -806,42 +798,49 @@ function CartoesResumoPainel({ cartoes }) {
     </div>
   );
 }
-// Lista compacta e somente-leitura das solicitações do próprio usuário — cabe no Painel sem
-// disputar espaço com os cartões de resumo porque rola dentro de uma altura fixa.
-function ListaMinhasSolicitacoesPainel({ itens, colunas }) {
-  if (itens.length === 0) return <p style={{ color: CORES.cinza, fontSize: 13 }}>Nenhuma solicitação sua ainda.</p>;
+// Cores de status usadas no Painel de Compras e Cadastros (KPIs e cartões por subsistema):
+// Pendentes = amarelo, Concluídas = azul, Canceladas = cinza (neutro, não compete com o vermelho de
+// Urgentes), Urgentes = vermelho. Verde não é usado — não representa prioridade/qualidade aqui.
+const COR_STATUS_COMPRAS = { pendente: "#FFD700", concluida: CORES.azulEscuro, cancelada: CORES.cinza, urgente: "#b91c1c" };
+// Um "mini-painel" por subsistema (Compras ou Cadastros): donut de status + legenda, tudo dentro
+// de um único Cartão — evita repetir grade de números soltos seguida de tabela crua para cada
+// subsistema, que é o que tornava o Painel anterior bagunçado.
+function PainelSubsistema({ titulo, rotuloDonut, lista, destaque }) {
+  const pendente = (c) => !c.concluido && !c.cancelado;
+  const donut = [
+    { l: "Pendentes", v: lista.filter(pendente).length, c: COR_STATUS_COMPRAS.pendente },
+    { l: "Concluídas", v: lista.filter((c) => c.concluido).length, c: COR_STATUS_COMPRAS.concluida },
+    { l: "Canceladas", v: lista.filter((c) => c.cancelado).length, c: COR_STATUS_COMPRAS.cancelada },
+  ];
+  const urgentesPendentes = lista.filter((c) => pendente(c) && c.urgente).length;
+  const linhas = [...donut, { l: "Urgentes (pendentes)", v: urgentesPendentes, c: COR_STATUS_COMPRAS.urgente }, ...(destaque ? [destaque] : [])];
   return (
-    <div style={{ maxHeight: 220, overflowY: "auto", border: `1px solid ${CORES.cinzaClaro}`, borderRadius: 8 }}>
-      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12.5 }}>
-        <thead style={{ position: "sticky", top: 0 }}>
-          <tr>{colunas.map((c) => <th key={c.rotulo} style={{ padding: "6px 8px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{c.rotulo}</th>)}</tr>
-        </thead>
-        <tbody>
-          {itens.map((it, i) => (
-            <tr key={it.id} style={{ background: i % 2 === 0 ? "#fff" : CORES.cinzaClaro }}>
-              {colunas.map((c) => <td key={c.rotulo} style={{ padding: "6px 8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, color: CORES.azul }}>{c.valor(it)}</td>)}
-            </tr>
+    <Cartao style={{ flex: 1, minWidth: 320 }}>
+      <h3 style={{ margin: "0 0 12px", color: CORES.azul, fontSize: 15 }}>{titulo}</h3>
+      <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+        <DonutPops dados={donut} size={110} rotuloCentro={rotuloDonut} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, color: CORES.azul }}>
+          <span><b>{lista.length}</b> no total</span>
+          {linhas.map((s) => (
+            <span key={s.l}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 9, background: s.c, marginRight: 6 }} />{s.l} <b>{s.v}</b></span>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </div>
+      </div>
+    </Cartao>
   );
 }
-function TelaPainelCompras({ dados, usuario, souAdmin }) {
+function TelaPainelCompras({ dados, souAdmin }) {
   const compras = dados.compras || [];
   const cadastros = dados.cadastros || [];
-  const cartoesCompras = [...resumoSolicitacoesPainel(compras), { rotulo: "Itens Aguardando Retirada", valor: compras.filter((c) => c.entregue && !c.recebido).length, cor: "#b45309" }];
-  const cartoesCadastros = resumoSolicitacoesPainel(cadastros);
-  const minhasCompras = compras.filter((c) => c.email === usuario.email).sort((a, b) => (b.dataHora || "").localeCompare(a.dataHora || ""));
-  const minhasCadastros = cadastros.filter((c) => c.email === usuario.email).sort((a, b) => (b.dataHora || "").localeCompare(a.dataHora || ""));
   const pendente = (c) => !c.concluido && !c.cancelado;
   const comprasPendentes = compras.filter(pendente);
   const cadastrosPendentes = cadastros.filter(pendente);
-  const cartoesPendencias = [
-    { rotulo: "Compras Pendentes", valor: comprasPendentes.length, cor: CORES.laranja },
-    { rotulo: "Compras Urgentes", valor: comprasPendentes.filter((c) => c.urgente).length, cor: "#b91c1c" },
-    { rotulo: "Cadastros Pendentes", valor: cadastrosPendentes.length, cor: CORES.laranja },
-    { rotulo: "Cadastros Urgentes", valor: cadastrosPendentes.filter((c) => c.urgente).length, cor: "#b91c1c" },
+  const aguardandoRetirada = compras.filter((c) => c.entregue && !c.recebido).length;
+  const kpisAdmin = [
+    { rotulo: "Pendentes (Compras + Cadastros)", valor: comprasPendentes.length + cadastrosPendentes.length, cor: COR_STATUS_COMPRAS.pendente },
+    { rotulo: "Urgentes", valor: comprasPendentes.filter((c) => c.urgente).length + cadastrosPendentes.filter((c) => c.urgente).length, cor: COR_STATUS_COMPRAS.urgente },
+    { rotulo: "Aguardando Retirada", valor: aguardandoRetirada, cor: "#b45309" },
+    { rotulo: "Concluídas (Compras + Cadastros)", valor: compras.filter((c) => c.concluido).length + cadastros.filter((c) => c.concluido).length, cor: COR_STATUS_COMPRAS.concluida },
   ];
   return (
     <div>
@@ -850,30 +849,24 @@ function TelaPainelCompras({ dados, usuario, souAdmin }) {
 
       {souAdmin && (
         <>
-          <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>Pendências — Relatórios de Compras / Cadastros</h3>
-          <CartoesResumoPainel cartoes={cartoesPendencias} />
-          <div style={{ height: 24 }} />
+          <CartoesResumoPainel cartoes={kpisAdmin} />
+          <div style={{ height: 20 }} />
         </>
       )}
 
-      <h3 style={{ margin: "0 0 10px", color: CORES.azul, fontSize: 15 }}>Solicitações de Compra</h3>
-      <CartoesResumoPainel cartoes={cartoesCompras} />
-      <p style={{ margin: "16px 0 6px", fontSize: 12.5, color: CORES.cinza, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Minhas solicitações de compra</p>
-      <ListaMinhasSolicitacoesPainel itens={minhasCompras} colunas={[
-        { rotulo: "Data/Hora", valor: (c) => c.dataHora },
-        { rotulo: "Cód. / Descrição", valor: (c) => `${c.urgente ? "🔴 " : ""}${c.codigo} — ${c.descricao}` },
-        { rotulo: "Status", valor: (c) => (c.cancelado ? "Cancelado" : rotuloStatusCompra(c)) },
-      ]} />
-
-      <h3 style={{ margin: "28px 0 10px", color: CORES.azul, fontSize: 15 }}>Solicitações de Cadastro</h3>
-      <CartoesResumoPainel cartoes={cartoesCadastros} />
-      <p style={{ margin: "16px 0 6px", fontSize: 12.5, color: CORES.cinza, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>Minhas solicitações de cadastro</p>
-      <ListaMinhasSolicitacoesPainel itens={minhasCadastros} colunas={[
-        { rotulo: "Data/Hora", valor: (c) => c.dataHora },
-        { rotulo: "Descrição", valor: (c) => `${c.urgente ? "🔴 " : ""}${c.descricao}` },
-        { rotulo: "Tipo", valor: (c) => c.tipo || "—" },
-        { rotulo: "Status", valor: (c) => statusDe(c) },
-      ]} />
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <PainelSubsistema
+          titulo="Solicitações de Compra"
+          rotuloDonut="Compras"
+          lista={compras}
+          destaque={{ l: "Aguardando retirada", v: aguardandoRetirada, c: "#b45309" }}
+        />
+        <PainelSubsistema
+          titulo="Solicitações de Cadastro"
+          rotuloDonut="Cadastros"
+          lista={cadastros}
+        />
+      </div>
     </div>
   );
 }
@@ -895,8 +888,9 @@ function popsDiasParaVencer(validade) { return validade ? Math.ceil((new Date(va
 const tdPops = { padding: "8px 10px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 13, color: CORES.azul, verticalAlign: "top" };
 
 // Gráficos simples em SVG (sem biblioteca externa) — donut e barras, usados no Painel
-function DonutPops({ dados: itens, size = 150 }) {
-  const total = itens.reduce((s, d) => s + d.v, 0) || 1;
+function DonutPops({ dados: itens, size = 150, rotuloCentro = "POPs" }) {
+  const totalReal = itens.reduce((s, d) => s + d.v, 0);
+  const total = totalReal || 1; // evita divisão por zero no cálculo dos arcos — não usar para exibição
   const R = size / 2, r = R * 0.62; let a0 = -Math.PI / 2; const cx = R, cy = R;
   const paths = [];
   itens.forEach((d, i) => {
@@ -912,7 +906,7 @@ function DonutPops({ dados: itens, size = 150 }) {
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
       {paths}
       <text x={cx} y={cy - 2} textAnchor="middle" fontSize={26} fontWeight={800} fill="#333">{total}</text>
-      <text x={cx} y={cy + 16} textAnchor="middle" fontSize={10} fill="#888">POPs</text>
+      <text x={cx} y={cy + 16} textAnchor="middle" fontSize={10} fill="#888">{rotuloCentro}</text>
     </svg>
   );
 }
