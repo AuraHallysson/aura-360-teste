@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.10.1";
+const VERSAO_APP = "1.11.0";
 const VERSAO_DATA = "2026-09-01"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -2820,6 +2820,53 @@ function TelaAuditoria({ dados, categoriasVisiveis }) {
   );
 }
 
+// Acesso ao Subsistema — checkbox direto de cada tela (Solicitação de Compras / Solicitação de
+// Cadastros), para o GM ou administrador delegado liberar/bloquear usuários sem precisar ir até a
+// Configurações geral do sistema. Mesmo padrão de marcar a tela direto (sem checkbox de "acesso"
+// separado) usado na versão restrita de Configurações e em Gestão de Procedimentos — ver
+// alternarPermissaoUsuario.
+function TelaAcessoCompras({ dados, setDados, usuario }) {
+  const alternarPermissao = (email, categoria, id) => alternarPermissaoUsuario(dados, setDados, usuario, email, categoria, id);
+  const th = { padding: 8, fontSize: 11.5, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" };
+  const td = { padding: "8px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 14, color: CORES.azul };
+  const subCompras = CATALOGO_GRUPOS.flatMap((g) => g.subsistemas).find((s) => s.id === "COMPRAS") || { features: [] };
+  const linhas = Object.entries(dados.usuarios).filter(([, u]) => u.perfil !== "GM");
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Acesso ao Subsistema</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>
+        Marque as telas que cada usuário pode acessar em Compras e Cadastros. Marcar uma tela já libera o acesso ao Subsistema como consequência.
+      </p>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead><tr>
+          <th style={th}>Nome</th><th style={th}>E-mail</th>
+          {subCompras.features.map((f) => <th key={f.id} style={th}>{f.nome}</th>)}
+        </tr></thead>
+        <tbody>
+          {linhas.map(([email, u]) => {
+            const perm = u.permissoes || permissoesDefault();
+            return (
+              <tr key={email}>
+                <td style={td}>{u.nome}</td>
+                <td style={td}>{email}</td>
+                {subCompras.features.map((f) => (
+                  <td key={f.id} style={td}>
+                    <input type="checkbox" checked={perm.features[f.id] === true} onChange={() => alternarPermissao(email, "features", f.id)}
+                      style={{ width: 15, height: 15, accentColor: CORES.laranja, cursor: "pointer" }} />
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {linhas.length === 0 && (
+        <p style={{ textAlign: "center", color: CORES.cinza, fontSize: 13, padding: "24px 0" }}>Nenhum usuário cadastrado ainda.</p>
+      )}
+    </div>
+  );
+}
+
 /* Administradores Responsáveis — pertence ao Subsistema Compras e Cadastros (não é uma configuração
    de plataforma do AURA 360°): define quais GM são notificados quando um usuário comum envia uma
    solicitação de compra/cadastro. Sem vínculo definido, o alerta vai a todos os GM. */
@@ -2899,7 +2946,12 @@ function TelaConfigCompras({ dados, setDados, usuario }) {
           }}>{rot}</button>
         ))}
       </div>
-      {aba === "responsaveis" && <TelaAdministradoresResponsaveis dados={dados} setDados={setDados} usuario={usuario} />}
+      {aba === "responsaveis" && (
+        <>
+          <TelaAcessoCompras dados={dados} setDados={setDados} usuario={usuario} />
+          <TelaAdministradoresResponsaveis dados={dados} setDados={setDados} usuario={usuario} />
+        </>
+      )}
       {aba === "materiais" && <TelaMateriais dados={dados} setDados={setDados} usuario={usuario} />}
       {aba === "registros" && <TelaAuditoria dados={dados} categoriasVisiveis={CATEGORIAS_POR_SUBSISTEMA.COMPRAS} />}
     </div>
