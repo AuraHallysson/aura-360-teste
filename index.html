@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.15.0";
+const VERSAO_APP = "1.16.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1654,36 +1654,84 @@ function tituloBasePorNomeArquivo(nomeArquivo) {
   s = s.replace(/^[\s\-_–—]+|[\s\-_–—]+$/g, "").replace(/\s+/g, " ").trim();
   return s.toLowerCase();
 }
-// Agrupa os .docx de uma Área por procedimento (mesmo código, ou mesmo título-base quando o
-// código não foi identificado) e monta um palpite de revisão por arquivo + pendências. Nada aqui
-// é definitivo — tudo fica editável na pré-visualização antes de confirmar a importação.
-function agruparProcedimentosPorArquivos(arquivos) {
+// Lê o CABEÇALHO real de um .docx (é um .zip com XML por dentro — dá pra ler com o JSZip que já
+// carregamos pra Importação/Exportação, sem biblioteca nova) e extrai Código/Título/Revisão. É a
+// 1ª fonte da hierarquia do prompt (cabeçalho > histórico de revisões > nome do arquivo > data).
+// O número da revisão do cabeçalho vem sempre acompanhado de data (ex.: "02 - 25/06/2026") — só o
+// número antes do hífen importa; a data é descartada aqui de propósito.
+async function lerCabecalhoDocx(file) {
+  try {
+    const zip = await window.JSZip.loadAsync(file);
+    const doc = zip.file("word/document.xml");
+    if (!doc) return { erro: "arquivo .docx sem word/document.xml (não é um Word válido)" };
+    const xml = await doc.async("string");
+    // Flatten grosseiro: fim de célula/parágrafo vira separador, tags somem. Não é um parser de
+    // Word completo — só o suficiente para achar os rótulos "Código/Título/Revisão" do cabeçalho.
+    const texto = xml
+      .replace(/<\/w:tc>/gi, " | ")
+      .replace(/<\/w:p>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/[ \t]+/g, " ");
+    const cabecalho = texto.slice(0, 2000); // o cabeçalho fica sempre no topo do documento
+    const mCodigo = cabecalho.match(/c[óo]digo\s*[:|]?\s*([A-Z]{2,6}(?:-[A-Z0-9]{1,6}){2,6})/i);
+    const mRevisao = cabecalho.match(/revis[ãa]o\s*[:|]?\s*(\d{1,3})/i);
+    const mTitulo = cabecalho.match(/t[íi]tulo\s*[:|]?\s*([^\n|]{2,150})/i);
+    // 2ª fonte (histórico de revisões): maior Nº numa tabela "Nº | Data | Descrição" no corpo todo
+    // do documento — só usada se o cabeçalho não tiver uma revisão legível.
+    const linhasHist = [...texto.matchAll(/\b(\d{1,3})\s*\|\s*\d{2}\/\d{2}\/\d{4}/g)];
+    const revisaoHistorico = linhasHist.length ? Math.max(...linhasHist.map((m) => parseInt(m[1], 10))) : null;
+    return {
+      codigo: mCodigo ? mCodigo[1].toUpperCase().trim() : null,
+      titulo: mTitulo ? mTitulo[1].trim().replace(/\s+/g, " ") : null,
+      revisaoCabecalho: mRevisao ? parseInt(mRevisao[1], 10) : null,
+      revisaoHistorico,
+    };
+  } catch (e) {
+    return { erro: e.message || String(e) };
+  }
+}
+// Identifica um procedimento por arquivo seguindo a hierarquia do prompt: cabeçalho → histórico
+// de revisões → nome do arquivo. Nunca usa só o nome quando o cabeçalho deu uma resposta confiável.
+async function identificarProcedimentoDoArquivo(file) {
+  const cab = await lerCabecalhoDocx(file);
+  const codigoPeloNome = codigoPorNomeArquivo(file.name);
+  const revisaoPeloNome = palpiteRevisaoPorNome(file.name);
+  if (cab.erro) return { codigo: codigoPeloNome, titulo: null, revPalpite: revisaoPeloNome, fonte: "nome do arquivo", erroLeitura: cab.erro };
+  const codigo = cab.codigo || codigoPeloNome;
+  if (cab.revisaoCabecalho !== null) return { codigo, titulo: cab.titulo, revPalpite: cab.revisaoCabecalho, fonte: "cabeçalho do documento", erroLeitura: null };
+  if (cab.revisaoHistorico !== null) return { codigo, titulo: cab.titulo, revPalpite: cab.revisaoHistorico, fonte: "histórico de revisões do documento", erroLeitura: null };
+  return { codigo, titulo: cab.titulo, revPalpite: revisaoPeloNome, fonte: "nome do arquivo (cabeçalho sem campo de revisão)", erroLeitura: null };
+}
+// Agrupa os .docx de uma Área por procedimento (mesmo Código do cabeçalho — ou do nome do arquivo
+// quando o cabeçalho não foi identificado) e determina a revisão de cada um automaticamente. Nada
+// aqui é definitivo — tudo fica editável na pré-visualização antes de confirmar a importação.
+async function agruparProcedimentosPorArquivos(arquivos) {
+  const docx = arquivos.filter((f) => /\.docx$/i.test(f.name)); // fase 1: só .docx
+  const itens = await Promise.all(docx.map(async (f) => ({ file: f, ...(await identificarProcedimentoDoArquivo(f)) })));
   const grupos = new Map();
-  arquivos.forEach((f) => {
-    if (!/\.docx$/i.test(f.name)) return; // fase 1: só .docx (ver plano — leitura de conteúdo fica pra fase 2)
-    const codigo = codigoPorNomeArquivo(f.name);
-    const chave = codigo || ("titulo:" + tituloBasePorNomeArquivo(f.name));
-    if (!grupos.has(chave)) grupos.set(chave, { codigo, arquivos: [] });
-    grupos.get(chave).arquivos.push(f);
+  itens.forEach((it) => {
+    const chave = it.codigo || ("titulo:" + tituloBasePorNomeArquivo(it.file.name));
+    if (!grupos.has(chave)) grupos.set(chave, { codigo: it.codigo, titulos: [], itens: [] });
+    const g = grupos.get(chave);
+    g.itens.push(it);
+    if (it.titulo) g.titulos.push(it.titulo);
   });
   return [...grupos.values()].map((g) => {
-    const semRev = [];
-    const candidatos = g.arquivos.map((f) => {
-      const rev = palpiteRevisaoPorNome(f.name);
-      if (rev === null) semRev.push(f);
-      return { file: f, revPalpite: rev, blobUrl: URL.createObjectURL(f) };
-    });
-    // Sem número no nome = candidato a "atual" (convenção: nome limpo sem sufixo = revisão atual).
-    // Mais de um arquivo assim no mesmo grupo é ambíguo e vira pendência — só um humano decide.
+    const semRev = g.itens.filter((it) => it.revPalpite === null);
+    const candidatos = g.itens.map((it) => ({ file: it.file, revPalpite: it.revPalpite, blobUrl: URL.createObjectURL(it.file), fonte: it.fonte, erroLeitura: it.erroLeitura }));
+    // Sem revisão identificada (nem cabeçalho, nem histórico, nem nome) = candidato a "atual" por
+    // eliminação. Mais de um arquivo assim no mesmo grupo é ambíguo e vira pendência.
     const maiorExplicita = Math.max(-1, ...candidatos.filter((c) => c.revPalpite !== null).map((c) => c.revPalpite));
     candidatos.forEach((c) => { if (c.revPalpite === null) c.revPalpite = maiorExplicita + 1; });
     candidatos.sort((a, b) => a.revPalpite - b.revPalpite || a.file.lastModified - b.file.lastModified);
     const revsRepetidas = candidatos.length !== new Set(candidatos.map((c) => c.revPalpite)).size;
-    const pendente = semRev.length > 1 || revsRepetidas;
-    const motivo = semRev.length > 1
-      ? "Mais de um arquivo sem número de revisão identificável no nome — confirme manualmente qual é a versão atual."
-      : revsRepetidas ? "Dois ou mais arquivos parecem ter a mesma revisão — confirme manualmente." : null;
-    const tituloGuess = tituloBasePorNomeArquivo(candidatos[candidatos.length - 1].file.name).toUpperCase();
+    const algumErroLeitura = candidatos.some((c) => c.erroLeitura);
+    const pendente = semRev.length > 1 || revsRepetidas || algumErroLeitura;
+    const motivo = revsRepetidas
+      ? "Dois ou mais arquivos têm a mesma revisão — possível duplicidade, confirme manualmente qual é a versão atual."
+      : semRev.length > 1 ? "Mais de um arquivo sem revisão identificável (nem no cabeçalho, nem no nome) — confirme manualmente qual é a versão atual."
+      : algumErroLeitura ? "Não foi possível ler o cabeçalho de algum arquivo — revisão estimada pelo nome, confirme manualmente." : null;
+    const tituloGuess = (g.titulos[0] || tituloBasePorNomeArquivo(candidatos[candidatos.length - 1].file.name)).toUpperCase();
     return { codigo: g.codigo, tituloGuess, candidatos, pendente, motivo };
   });
 }
@@ -1692,6 +1740,7 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
   const [resultado, setResultado] = useState(null);
   const [importando, setImportando] = useState(false);
   const [resumo, setResumo] = useState(null);
+  const [analisando, setAnalisando] = useState(false);
 
   useEffect(() => () => {
     // Libera os blob: URLs criados pra pré-visualização quando a tela é desmontada/reanalisada.
@@ -1707,8 +1756,10 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     // eslint-disable-next-line
   }, []);
 
-  const analisarArquivos = (files) => {
+  const analisarArquivos = async (files) => {
     if (files.length === 0) return;
+    setAnalisando(true);
+    try {
     let origemNome = "";
     const porPasta = new Map();
     files.forEach((f) => {
@@ -1719,13 +1770,17 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
       if (!porPasta.has(pasta)) porPasta.set(pasta, []);
       porPasta.get(pasta).push(f);
     });
-    let areasCandidatas = [];
     let pastaListaProcedimentos = null, pastaModeloPop = null;
-    [...porPasta.entries()].forEach(([pastaOriginal, arquivosPasta]) => {
-      if (ehPastaListaDeProcedimentos(pastaOriginal)) { pastaListaProcedimentos = { pastaOriginal, arquivosPasta }; return; }
-      if (ehPastaModeloPop(pastaOriginal)) { pastaModeloPop = { pastaOriginal, arquivosPasta }; return; }
-      areasCandidatas.push({ pastaOriginal, ...normalizarNomeArea(pastaOriginal), grupos: agruparProcedimentosPorArquivos(arquivosPasta) });
+    const entradasArea = [...porPasta.entries()].filter(([pastaOriginal, arquivosPasta]) => {
+      if (ehPastaListaDeProcedimentos(pastaOriginal)) { pastaListaProcedimentos = { pastaOriginal, arquivosPasta }; return false; }
+      if (ehPastaModeloPop(pastaOriginal)) { pastaModeloPop = { pastaOriginal, arquivosPasta }; return false; }
+      return true;
     });
+    // Lê o cabeçalho de cada .docx (via JSZip) pra determinar a revisão automaticamente — por
+    // isso a análise agora é assíncrona; o botão fica desabilitado com um aviso enquanto processa.
+    let areasCandidatas = await Promise.all(entradasArea.map(async ([pastaOriginal, arquivosPasta]) => ({
+      pastaOriginal, ...normalizarNomeArea(pastaOriginal), grupos: await agruparProcedimentosPorArquivos(arquivosPasta),
+    })));
     // Nenhuma Área pode repetir índice — resolve antes de calcular Lista de Procedimentos/Modelo -
     // POP, que dependem do maior índice já sem conflitos.
     areasCandidatas = resolverIndicesUnicosDeAreas(areasCandidatas);
@@ -1758,6 +1813,9 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     const totalPendencias = areas.reduce((s, a) => s + (a.pendente ? 1 : 0) + a.grupos.filter((g) => g.pendente).length, 0);
     setResultado({ origemNome, areas, totalArquivos, totalProcedimentos, totalArquivosDocx, totalPendencias });
     setResumo(null);
+    } finally {
+      setAnalisando(false);
+    }
   };
 
   // Trocar de pasta a partir desta tela (ex.: depois de já ter visto a pré-visualização).
@@ -1816,7 +1874,7 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
           for (const cand of ordenados) {
             const arquivoSalvo = await salvarArquivoProcedimento(cand.file, area.pastaNorm);
             const iso = new Date(cand.file.lastModified).toISOString().slice(0, 10);
-            historico.push({ rev: cand.revPalpite, data: formatarDataBR(iso), dataIso: iso, descricao: cand.revPalpite === 0 ? "Inicial (importado)" : "Importado da origem — revisão estimada pelo nome do arquivo", arquivo: arquivoSalvo });
+            historico.push({ rev: cand.revPalpite, data: formatarDataBR(iso), dataIso: iso, descricao: cand.revPalpite === 0 ? "Inicial (importado)" : `Importado da origem — revisão identificada pelo ${cand.fonte || "nome do arquivo"}`, arquivo: arquivoSalvo });
             arquivosPadronizados++;
           }
           const ultima = historico.find((h) => h.rev === revisaoAtualNum);
@@ -1865,7 +1923,13 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
         </Cartao>
       )}
 
-      {!resultado && (
+      {analisando && (
+        <Cartao style={{ marginBottom: 16 }}>
+          <p style={{ fontSize: 13, color: CORES.azul, margin: 0 }}>⏳ Analisando arquivos — lendo o cabeçalho de cada .docx para identificar Código, Título e Revisão automaticamente…</p>
+        </Cartao>
+      )}
+
+      {!resultado && !analisando && (
         <label style={{ display: "inline-block", cursor: "pointer" }}>
           <Botao tipo="laranja" style={{ pointerEvents: "none" }}>📂 Selecionar pasta de origem</Botao>
           <input type="file" webkitdirectory="" directory="" multiple onChange={analisar} style={{ display: "none" }} />
@@ -1903,7 +1967,12 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
                           <span style={{ fontSize: 11.5, color: CORES.cinza }}>{grupo.tituloGuess}</span>
                           {grupo.pendente && <div style={{ fontSize: 11.5, color: CORES.laranja, marginTop: 4 }}>⚠ {grupo.motivo}</div>}
                         </td>}
-                        <td style={tdPops}>{cand.file.name}</td>
+                        <td style={tdPops}>
+                          {cand.file.name}
+                          <div style={{ fontSize: 10.5, color: cand.fonte === "cabeçalho do documento" ? "#0f6b3f" : CORES.cinza, marginTop: 2 }}>
+                            revisão via {cand.fonte}{cand.erroLeitura ? ` (${cand.erroLeitura})` : ""}
+                          </div>
+                        </td>
                         <td style={tdPops}><input type="number" min={0} value={cand.revPalpite} onChange={(e) => atualizarRevisao(ai, gi, ci, e.target.value)} style={{ ...inputStyle, width: 60, padding: "4px 6px" }} /></td>
                         <td style={tdPops}><a href={cand.blobUrl} target="_blank" rel="noreferrer">abrir</a></td>
                       </tr>
