@@ -17,6 +17,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<!-- JSZip: usado só pela Importação/Exportação de Procedimentos (backup .zip da origem e export .zip do acervo). -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <!-- MSAL: biblioteca oficial da Microsoft para autenticacao Entra ID.
      CDN oficial da Microsoft (alcdn.msauth.net) estava fora do ar (404) nesta versao; usando jsDelivr
      como espelho do pacote npm oficial @azure/msal-browser. -->
@@ -90,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.13.0";
+const VERSAO_APP = "1.14.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -469,6 +471,7 @@ const dadosVazios = () => ({
   pops: POPS_INICIAIS,
   popsAreas: AREAS_POPS_INICIAIS,
   popsConfig: POPS_CONFIG_INICIAL,
+  importacoesPops: [], // log de importações feitas na aba Dados → Importação de Procedimentos
 });
 
 /* ---------------- Trilha de auditoria (SOX) ----------------
@@ -510,6 +513,7 @@ async function carregarDados() {
       if (!Array.isArray(d.pops)) d.pops = POPS_INICIAIS;
       if (!Array.isArray(d.popsAreas)) d.popsAreas = AREAS_POPS_INICIAIS;
       if (!d.popsConfig) d.popsConfig = POPS_CONFIG_INICIAL;
+      if (!Array.isArray(d.importacoesPops)) d.importacoesPops = [];
       return d;
     }
   } catch (e) { /* chave inexistente */ }
@@ -1022,6 +1026,36 @@ function TelaPainelPops({ dados }) {
 }
 
 // Modal de detalhe/workflow de um POP — ações condicionadas ao papel do usuário (Auditor/Avaliador/SSMA)
+// Nome exibido/baixado de um arquivo de revisão de POP — nunca o nome original que a pessoa
+// enviou, sempre uma máscara pelo código. A revisão ATUAL (a mais recente já concluída,
+// pop.revisaoAtual) usa só o código, sem número (ex.: "POP-BO-BEN-BEM-001.docx"); cada revisão
+// anterior (já superada) ganha o sufixo "- rev_NN" (ex.: "POP-BO-BEN-BEM-001 - rev_02.docx").
+// Reusado pelo modal de detalhe do POP e pela Importação/Exportação (aba Dados).
+function nomeArquivoRevPop(pop, rev) {
+  return rev === (pop.revisaoAtual ?? 0) ? `${pop.codigo}.docx` : `${pop.codigo} - rev_${String(rev).padStart(2, "0")}.docx`;
+}
+
+// Href/atributo de download de um arquivo de POP — mesmo padrão dual já usado no anexo de
+// Cadastros: {url} quando o arquivo real está no SharePoint (Modo real/Entra ID), {dataUrl} em
+// base64 quando está só no localStorage (Demonstração). Link real não precisa de "download"
+// (é um webUrl que abre em nova aba); o base64 precisa, senão o navegador tenta navegar para ele.
+function hrefArquivoPop(arquivo) {
+  if (!arquivo) return { href: null, download: undefined };
+  return { href: arquivo.url || arquivo.dataUrl, download: arquivo.url ? undefined : arquivo.nome };
+}
+
+// Envia um .docx de procedimento para armazenamento: SharePoint (Modo real) ou base64 local
+// (Demonstração) — mesmo princípio de enviarAnexoSharePoint, pasta própria "AuraProcedimentos".
+async function salvarArquivoProcedimento(file, caminho) {
+  if (AUTENTICACAO_REAL) return await enviarProcedimentoSharePoint(file, caminho);
+  return await new Promise((resolve, reject) => {
+    const leitor = new FileReader();
+    leitor.onload = () => resolve({ nome: file.name, dataUrl: leitor.result });
+    leitor.onerror = () => reject(new Error("Não foi possível ler o arquivo " + file.name + "."));
+    leitor.readAsDataURL(file);
+  });
+}
+
 function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) {
   const [modoObs, setModoObs] = useState(null); // null | "reprovar" | "confirmar"
   const [textoObs, setTextoObs] = useState("");
@@ -1058,12 +1092,14 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
 
   const enviarUpload = (e) => {
     const f = e.target.files[0]; if (!f) return;
+    e.target.value = "";
     if (!/\.docx$/i.test(f.name)) { avisar("Envie um arquivo .docx."); return; }
-    const reader = new FileReader();
-    reader.onload = () => rodar(() => atualizarPop(pop.id, {
-      trabalhoAnexo: { nome: f.name, dataUrl: reader.result }, trabalhoEnviado: true, trabalhoEnviadoEm: new Date().toISOString(),
-    }, "Enviou versão revisada (upload)", f.name));
-    reader.readAsDataURL(f);
+    rodar(async () => {
+      const arquivo = await salvarArquivoProcedimento(f, pop.area);
+      await atualizarPop(pop.id, {
+        trabalhoAnexo: arquivo, trabalhoEnviado: true, trabalhoEnviadoEm: new Date().toISOString(),
+      }, "Enviou versão revisada (upload)", f.name);
+    });
   };
 
   const enviarAvaliacao = () => rodar(async () => {
@@ -1094,18 +1130,12 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
   });
 
   const hist = pop.historico || [];
-  // O nome exibido/baixado de um arquivo de revisão nunca é o nome original que a pessoa enviou —
-  // é uma máscara pelo código do POP. A revisão ATUAL (a mais recente já concluída, pop.revisaoAtual)
-  // usa só o código, sem número — é "o procedimento" — e cada revisão anterior (já superada) ganha o
-  // sufixo "- rev_NN" (ex.: "POP-BO-BEN-BEM-001.docx" é a atual; "POP-BO-BEN-BEM-001 - rev_02.docx"
-  // é uma revisão anterior). Recalculado a cada render, então quando uma nova revisão é concluída a
-  // anterior passa a ganhar o sufixo automaticamente, sem precisar reescrever o histórico salvo.
-  const nomeArquivoRev = (rev) => rev === (pop.revisaoAtual ?? 0) ? `${pop.codigo}.docx` : `${pop.codigo} - rev_${String(rev).padStart(2, "0")}.docx`;
+  const nomeArquivoRev = (rev) => nomeArquivoRevPop(pop, rev);
   // Procedimento "atual" para baixar ao iniciar uma revisão = arquivo da revisão concluída mais
   // recente no histórico. Só existe a partir da 1ª revisão feita com upload por aqui — POPs
   // importados sem arquivo original não têm o que baixar (fica indicado na tela).
-  const ultimoComArquivo = [...hist].reverse().find((h) => h.arquivo?.dataUrl);
-  const arquivoAtual = ultimoComArquivo ? { dataUrl: ultimoComArquivo.arquivo.dataUrl, nome: nomeArquivoRev(ultimoComArquivo.rev) } : null;
+  const ultimoComArquivo = [...hist].reverse().find((h) => h.arquivo?.url || h.arquivo?.dataUrl);
+  const arquivoAtual = ultimoComArquivo ? { ...ultimoComArquivo.arquivo, nome: nomeArquivoRev(ultimoComArquivo.rev) } : null;
   const revEmAndamento = pop.revisaoEmAndamento || (pop.revisaoAtual || 0) + 1;
 
   return (
@@ -1125,7 +1155,7 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
           <div style={{ background: CORES.cinzaClaro, borderRadius: 8, padding: 14, marginTop: 8 }}>
             <div style={{ marginBottom: 10, fontSize: 13 }}>
               {arquivoAtual ? (
-                <a href={arquivoAtual.dataUrl} download={arquivoAtual.nome} style={{ color: CORES.azul, fontWeight: 700 }}>⬇ Baixar procedimento atual ({arquivoAtual.nome})</a>
+                <a {...hrefArquivoPop(arquivoAtual)} target={arquivoAtual.url ? "_blank" : undefined} rel={arquivoAtual.url ? "noreferrer" : undefined} style={{ color: CORES.azul, fontWeight: 700 }}>⬇ Baixar procedimento atual ({arquivoAtual.nome})</a>
               ) : (
                 <span style={{ color: CORES.cinza, fontStyle: "italic" }}>Nenhum arquivo do procedimento atual disponível neste sistema (documento original não foi carregado aqui) — consulte o Singular.</span>
               )}
@@ -1137,7 +1167,9 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
               </label>
             ) : (
               <div style={{ fontSize: 13, color: CORES.azul, marginBottom: 8 }}>✓ Versão revisada enviada: <b>{nomeArquivoRev(revEmAndamento)}</b> em {new Date(pop.trabalhoEnviadoEm).toLocaleString("pt-BR")}
-                {pop.trabalhoAnexo.dataUrl && <> — <a href={pop.trabalhoAnexo.dataUrl} download={nomeArquivoRev(revEmAndamento)}>baixar</a></>}</div>
+                {(pop.trabalhoAnexo.url || pop.trabalhoAnexo.dataUrl) && (
+                  <> — <a {...hrefArquivoPop({ ...pop.trabalhoAnexo, nome: nomeArquivoRev(revEmAndamento) })} target={pop.trabalhoAnexo.url ? "_blank" : undefined} rel={pop.trabalhoAnexo.url ? "noreferrer" : undefined}>baixar</a></>
+                )}</div>
             )}
             {pop.trabalhoEnviado && (
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
@@ -1197,8 +1229,8 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
           <tbody>{hist.length ? hist.map((h, i) => (
             <tr key={i}>
               <td style={tdPops}>
-                {h.arquivo?.dataUrl
-                  ? <a href={h.arquivo.dataUrl} download={nomeArquivoRev(h.rev)} title={`Baixar ${nomeArquivoRev(h.rev)}`}>⬇ {String(h.rev).padStart(2, "0")}</a>
+                {(h.arquivo?.url || h.arquivo?.dataUrl)
+                  ? <a {...hrefArquivoPop({ ...h.arquivo, nome: nomeArquivoRev(h.rev) })} target={h.arquivo.url ? "_blank" : undefined} rel={h.arquivo.url ? "noreferrer" : undefined} title={`Baixar ${nomeArquivoRev(h.rev)}`}>⬇ {String(h.rev).padStart(2, "0")}</a>
                   : String(h.rev).padStart(2, "0")}
               </td>
               <td style={tdPops}>{h.data}</td>
@@ -1529,6 +1561,373 @@ function TelaPendenciasPops() {
   );
 }
 
+// ============================================================
+// Importação/Exportação de Procedimentos — aba "Dados" em Configurações → Gestão de
+// Procedimentos. Transforma uma pasta legada/desorganizada na estrutura já usada pelo sistema
+// (dados.pops + dados.popsAreas) sem nunca escrever na pasta de origem — o seletor de pasta do
+// navegador (webkitdirectory) é somente-leitura por natureza, então essa regra vem de graça.
+// ============================================================
+
+function baixarBlob(blob, nomeArquivo) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = nomeArquivo;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+function timestampArquivo() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+
+// Corrige só separador/espaçamento do nome de uma pasta candidata a Área — NÃO tenta corrigir
+// capitalização (ex.: "CIL"/"DETOX" são siglas propositalmente em caixa alta; forçar Title Case
+// quebraria esses casos). Sem índice numérico no início não há como confirmar a posição com
+// segurança: mantém o nome original e sinaliza pendência (regra do prompt: preservar > adivinhar).
+function normalizarNomeArea(nomeOriginal) {
+  const nome = (nomeOriginal || "").trim();
+  const m = nome.match(/^(\d{1,3})\s*[-–—]?\s*(.+)$/);
+  if (!m) return { indice: null, nome, pastaNorm: nome, pendente: true, motivo: "Pasta sem índice numérico no início do nome" };
+  const indice = parseInt(m[1], 10);
+  const resto = m[2].trim().replace(/\s+/g, " ");
+  if (!resto) return { indice, nome, pastaNorm: nome, pendente: true, motivo: "Não foi possível identificar o nome da Área" };
+  return { indice, nome: resto, pastaNorm: `${String(indice).padStart(2, "0")} - ${resto}`, pendente: false, motivo: null };
+}
+// Reconhece a pasta especial "Lista de Procedimentos" (não é uma Área) por variações comuns de
+// grafia/espaçamento — não entra no cálculo do maior índice de Área.
+function ehPastaListaDeProcedimentos(nomeOriginal) {
+  const limpo = (nomeOriginal || "").replace(/^\d+\s*[-–—]?\s*/, "").trim().toLowerCase().replace(/\s+/g, " ");
+  return limpo === "lista de procedimentos";
+}
+// Palpite de revisão só pelo NOME do arquivo (regra do prompt: nome é só apoio, nunca decide por
+// si só) — procura "Rev01", "Rev.00", "Rev 1", etc. null quando o nome não traz nenhum número.
+function palpiteRevisaoPorNome(nomeArquivo) {
+  const m = (nomeArquivo || "").match(/rev[\s._-]*?(\d{1,2})/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+// Código do procedimento a partir do nome do arquivo (ex.: "POP-BO-BEN-BEM-001") — só um apoio
+// para agrupar arquivos do mesmo procedimento; nunca é a única fonte usada para decidir a revisão.
+function codigoPorNomeArquivo(nomeArquivo) {
+  const m = (nomeArquivo || "").match(/^([A-Z]{2,5}(?:-[A-Z0-9]{1,5}){2,5})/i);
+  return m ? m[1].toUpperCase() : null;
+}
+// Título "limpo" a partir do nome do arquivo — remove código/extensão/sufixos de revisão — usado
+// só pra agrupar arquivos do mesmo procedimento quando o código não foi identificado.
+function tituloBasePorNomeArquivo(nomeArquivo) {
+  let s = (nomeArquivo || "").replace(/\.docx$/i, "");
+  const cod = codigoPorNomeArquivo(s);
+  if (cod) s = s.slice(cod.length);
+  s = s.replace(/rev[\s._-]*?\d{1,2}/gi, "");
+  s = s.replace(/^[\s\-_–—]+|[\s\-_–—]+$/g, "").replace(/\s+/g, " ").trim();
+  return s.toLowerCase();
+}
+// Agrupa os .docx de uma Área por procedimento (mesmo código, ou mesmo título-base quando o
+// código não foi identificado) e monta um palpite de revisão por arquivo + pendências. Nada aqui
+// é definitivo — tudo fica editável na pré-visualização antes de confirmar a importação.
+function agruparProcedimentosPorArquivos(arquivos) {
+  const grupos = new Map();
+  arquivos.forEach((f) => {
+    if (!/\.docx$/i.test(f.name)) return; // fase 1: só .docx (ver plano — leitura de conteúdo fica pra fase 2)
+    const codigo = codigoPorNomeArquivo(f.name);
+    const chave = codigo || ("titulo:" + tituloBasePorNomeArquivo(f.name));
+    if (!grupos.has(chave)) grupos.set(chave, { codigo, arquivos: [] });
+    grupos.get(chave).arquivos.push(f);
+  });
+  return [...grupos.values()].map((g) => {
+    const semRev = [];
+    const candidatos = g.arquivos.map((f) => {
+      const rev = palpiteRevisaoPorNome(f.name);
+      if (rev === null) semRev.push(f);
+      return { file: f, revPalpite: rev, blobUrl: URL.createObjectURL(f) };
+    });
+    // Sem número no nome = candidato a "atual" (convenção: nome limpo sem sufixo = revisão atual).
+    // Mais de um arquivo assim no mesmo grupo é ambíguo e vira pendência — só um humano decide.
+    const maiorExplicita = Math.max(-1, ...candidatos.filter((c) => c.revPalpite !== null).map((c) => c.revPalpite));
+    candidatos.forEach((c) => { if (c.revPalpite === null) c.revPalpite = maiorExplicita + 1; });
+    candidatos.sort((a, b) => a.revPalpite - b.revPalpite || a.file.lastModified - b.file.lastModified);
+    const revsRepetidas = candidatos.length !== new Set(candidatos.map((c) => c.revPalpite)).size;
+    const pendente = semRev.length > 1 || revsRepetidas;
+    const motivo = semRev.length > 1
+      ? "Mais de um arquivo sem número de revisão identificável no nome — confirme manualmente qual é a versão atual."
+      : revsRepetidas ? "Dois ou mais arquivos parecem ter a mesma revisão — confirme manualmente." : null;
+    const tituloGuess = tituloBasePorNomeArquivo(candidatos[candidatos.length - 1].file.name).toUpperCase();
+    return { codigo: g.codigo, tituloGuess, candidatos, pendente, motivo };
+  });
+}
+
+function TelaImportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
+  const [resultado, setResultado] = useState(null);
+  const [importando, setImportando] = useState(false);
+  const [resumo, setResumo] = useState(null);
+
+  useEffect(() => () => {
+    // Libera os blob: URLs criados pra pré-visualização quando a tela é desmontada/reanalisada.
+    if (!resultado) return;
+    resultado.areas.forEach((a) => a.grupos.forEach((g) => g.candidatos.forEach((c) => URL.revokeObjectURL(c.blobUrl))));
+  }, [resultado]);
+
+  const analisar = (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length === 0) return;
+    let origemNome = "";
+    const porPasta = new Map();
+    files.forEach((f) => {
+      const partes = (f.webkitRelativePath || f.name).split("/");
+      if (partes.length < 2) return; // arquivo direto na raiz, sem pasta de Área — fica de fora (fase 1)
+      origemNome = origemNome || partes[0];
+      const pasta = partes[1];
+      if (!porPasta.has(pasta)) porPasta.set(pasta, []);
+      porPasta.get(pasta).push(f);
+    });
+    const areas = [];
+    let pastaListaProcedimentos = null;
+    [...porPasta.entries()].forEach(([pastaOriginal, arquivosPasta]) => {
+      if (ehPastaListaDeProcedimentos(pastaOriginal)) { pastaListaProcedimentos = { pastaOriginal, arquivosPasta }; return; }
+      areas.push({ pastaOriginal, ...normalizarNomeArea(pastaOriginal), grupos: agruparProcedimentosPorArquivos(arquivosPasta) });
+    });
+    if (pastaListaProcedimentos) {
+      const maiorIndice = Math.max(0, ...areas.filter((a) => a.indice !== null).map((a) => a.indice));
+      const indiceLista = maiorIndice + 10;
+      areas.push({
+        pastaOriginal: pastaListaProcedimentos.pastaOriginal, indice: indiceLista, nome: "Lista de Procedimentos",
+        pastaNorm: `${String(indiceLista).padStart(2, "0")} - Lista de Procedimentos`, pendente: false, motivo: null,
+        grupos: [], ehListaProcedimentos: true, arquivosBrutos: pastaListaProcedimentos.arquivosPasta,
+      });
+    }
+    const totalArquivos = files.length;
+    const totalProcedimentos = areas.reduce((s, a) => s + a.grupos.length, 0);
+    const totalArquivosDocx = areas.reduce((s, a) => s + a.grupos.reduce((s2, g) => s2 + g.candidatos.length, 0), 0);
+    const totalPendencias = areas.reduce((s, a) => s + (a.pendente ? 1 : 0) + a.grupos.filter((g) => g.pendente).length, 0);
+    setResultado({ origemNome, areas, totalArquivos, totalProcedimentos, totalArquivosDocx, totalPendencias });
+    setResumo(null);
+  };
+
+  const atualizarRevisao = (ai, gi, ci, valor) => {
+    setResultado((r) => ({
+      ...r,
+      areas: r.areas.map((a, i) => i !== ai ? a : {
+        ...a,
+        grupos: a.grupos.map((g, j) => j !== gi ? g : { ...g, candidatos: g.candidatos.map((c, k) => k !== ci ? c : { ...c, revPalpite: parseInt(valor, 10) || 0 }) }),
+      }),
+    }));
+  };
+
+  const confirmarImportacao = async () => {
+    if (!resultado) return;
+    setImportando(true);
+    try {
+      const zipBackup = new window.JSZip();
+      resultado.areas.forEach((a) => {
+        const arquivosDaArea = a.ehListaProcedimentos ? (a.arquivosBrutos || []) : a.grupos.flatMap((g) => g.candidatos.map((c) => c.file));
+        arquivosDaArea.forEach((f) => zipBackup.file(f.webkitRelativePath || f.name, f));
+      });
+      const blobBackup = await zipBackup.generateAsync({ type: "blob" });
+      const nomeBackup = `Backup_${timestampArquivo()}.zip`;
+      baixarBlob(blobBackup, nomeBackup);
+      if (AUTENTICACAO_REAL) {
+        try { await enviarBackupSharePoint(blobBackup, nomeBackup); }
+        catch (e) { avisar("Backup baixado localmente, mas o envio ao SharePoint falhou: " + e.message); }
+      }
+
+      let popsAreasAtual = dados.popsAreas || [];
+      let popsAtual = dados.pops || [];
+      let proximoId = Math.max(0, ...popsAtual.map((p) => p.id)) + 1;
+      let conflitos = 0, pendencias = 0, procedimentosCriados = 0, arquivosPadronizados = 0;
+      const importId = "IMP-" + Date.now();
+
+      for (const area of resultado.areas) {
+        if (!popsAreasAtual.some((a) => a.pastaNorm === area.pastaNorm)) {
+          popsAreasAtual = [...popsAreasAtual, { id: Math.max(0, ...popsAreasAtual.map((a) => a.id), 0) + 1, numero: area.indice, nome: area.nome, pastaNorm: area.pastaNorm }];
+        }
+        if (area.pendente) pendencias++;
+        if (area.ehListaProcedimentos) continue;
+        for (const grupo of area.grupos) {
+          if (grupo.pendente) pendencias++;
+          if (!grupo.codigo) { pendencias++; continue; } // sem código identificável: preserva no backup, não cria pop sozinho
+          if (popsAtual.some((p) => p.codigo.toLowerCase() === grupo.codigo.toLowerCase())) { conflitos++; continue; } // nunca sobrescreve procedimento oficial existente
+          const ordenados = [...grupo.candidatos].sort((a, b) => a.revPalpite - b.revPalpite);
+          const revisaoAtualNum = Math.max(...ordenados.map((c) => c.revPalpite));
+          const historico = [];
+          for (const cand of ordenados) {
+            const arquivoSalvo = await salvarArquivoProcedimento(cand.file, area.pastaNorm);
+            const iso = new Date(cand.file.lastModified).toISOString().slice(0, 10);
+            historico.push({ rev: cand.revPalpite, data: formatarDataBR(iso), dataIso: iso, descricao: cand.revPalpite === 0 ? "Inicial (importado)" : "Importado da origem — revisão estimada pelo nome do arquivo", arquivo: arquivoSalvo });
+            arquivosPadronizados++;
+          }
+          const ultima = historico.find((h) => h.rev === revisaoAtualNum);
+          popsAtual = [...popsAtual, {
+            id: proximoId++, codigo: grupo.codigo, titulo: grupo.tituloGuess || grupo.codigo, area: area.pastaNorm, status: "PUBLICADO",
+            revisaoAtual: revisaoAtualNum, dataRevisao: ultima?.data || "", dataRevisaoIso: ultima?.dataIso || null,
+            validade: ultima?.dataIso ? popsAddDias(ultima.dataIso, dados.popsConfig?.validadeDias || 365) : null,
+            singularUpload: false, criadoEm: new Date().toISOString(), historico,
+            origemImportacaoId: importId, pendente: grupo.pendente, motivoPendencia: grupo.motivo || null,
+          }];
+          procedimentosCriados++;
+        }
+      }
+
+      const registro = {
+        id: importId, data: new Date().toISOString(), usuarioEmail: usuario.email, origemNome: resultado.origemNome,
+        areasEncontradas: resultado.areas.length, arquivosAnalisados: resultado.totalArquivos,
+        procedimentosIdentificados: procedimentosCriados + conflitos, arquivosPadronizados, pendencias, conflitos,
+        backupNome: nomeBackup, status: (pendencias + conflitos) > 0 ? "Concluída com pendências" : "Concluída",
+      };
+      let nd = { ...dados, pops: popsAtual, popsAreas: popsAreasAtual, importacoesPops: [...(dados.importacoesPops || []), registro] };
+      nd = comLog(nd, usuario, "Procedimentos", "Importou procedimentos", `${resultado.origemNome} — ${procedimentosCriados} criado(s), ${conflitos} conflito(s), ${pendencias} pendência(s)`, importId);
+      setDados(nd); await salvarDados(nd);
+      setResumo(registro);
+      setResultado(null);
+    } catch (e) {
+      avisar("Falha na importação: " + (e.message || String(e)));
+    } finally {
+      setImportando(false);
+    }
+  };
+
+  return (
+    <div>
+      <button onClick={aoVoltar} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: 12, padding: 0, fontFamily: "inherit" }}>← Voltar a Dados</button>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Importação de Procedimentos</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>A pasta de origem nunca é alterada — a leitura é somente uma cópia local em memória, nada é gravado até confirmar a importação.</p>
+
+      {resumo && (
+        <Cartao style={{ marginBottom: 16, borderTop: `4px solid ${resumo.status === "Concluída" ? "#0f6b3f" : CORES.laranja}` }}>
+          <h3 style={{ margin: "0 0 8px", color: CORES.azul, fontSize: 15 }}>Importação {resumo.id} — {resumo.status}</h3>
+          <p style={{ fontSize: 13, color: CORES.azul, margin: 0 }}>
+            Áreas: <b>{resumo.areasEncontradas}</b> · Arquivos analisados: <b>{resumo.arquivosAnalisados}</b> · Procedimentos: <b>{resumo.procedimentosIdentificados}</b> · Padronizados: <b>{resumo.arquivosPadronizados}</b> · Pendências: <b>{resumo.pendencias}</b> · Conflitos: <b>{resumo.conflitos}</b>
+          </p>
+          <p style={{ fontSize: 12.5, color: CORES.cinza, margin: "6px 0 0" }}>Backup gerado: {resumo.backupNome} (baixado automaticamente{AUTENTICACAO_REAL ? " e enviado ao SharePoint" : ""}).</p>
+        </Cartao>
+      )}
+
+      {!resultado && (
+        <label style={{ display: "inline-block", cursor: "pointer" }}>
+          <Botao tipo="laranja" style={{ pointerEvents: "none" }}>📂 Selecionar pasta de origem</Botao>
+          <input type="file" webkitdirectory="" directory="" multiple onChange={analisar} style={{ display: "none" }} />
+        </label>
+      )}
+
+      {resultado && (
+        <>
+          <Cartao style={{ marginBottom: 16 }}>
+            <p style={{ fontSize: 13, color: CORES.azul, margin: 0 }}>
+              Origem: <b>{resultado.origemNome}</b> · Áreas: <b>{resultado.areas.length}</b> · Arquivos: <b>{resultado.totalArquivos}</b> · Procedimentos identificados: <b>{resultado.totalProcedimentos}</b> · Pendências: <b>{resultado.totalPendencias}</b>
+            </p>
+          </Cartao>
+          {resultado.areas.map((area, ai) => (
+            <Cartao key={area.pastaOriginal} style={{ marginBottom: 14, borderTop: `4px solid ${area.pendente ? CORES.laranja : CORES.azul}` }}>
+              <h3 style={{ margin: "0 0 4px", color: CORES.azul, fontSize: 15 }}>{area.pastaNorm}</h3>
+              {area.pastaOriginal !== area.pastaNorm && <p style={{ fontSize: 11.5, color: CORES.cinza, margin: "0 0 8px" }}>Pasta original: "{area.pastaOriginal}"</p>}
+              {area.pendente && <p style={{ fontSize: 12, color: CORES.laranja, margin: "0 0 8px" }}>⚠ Pendência: {area.motivo}</p>}
+              {area.ehListaProcedimentos ? (
+                <p style={{ fontSize: 12.5, color: CORES.cinza, margin: 0 }}>Pasta especial "Lista de Procedimentos" — {area.arquivosBrutos.length} arquivo(s), não entram como procedimentos do acervo.</p>
+              ) : area.grupos.length === 0 ? (
+                <p style={{ fontSize: 12.5, color: CORES.cinza, margin: 0 }}>Nenhum arquivo .docx reconhecido nesta pasta.</p>
+              ) : (
+                <table style={{ borderCollapse: "collapse", width: "100%" }}>
+                  <thead><tr><th style={tdPops}>Procedimento</th><th style={tdPops}>Arquivo</th><th style={tdPops}>Rev.</th><th style={tdPops}></th></tr></thead>
+                  <tbody>
+                    {area.grupos.map((grupo, gi) => grupo.candidatos.map((cand, ci) => (
+                      <tr key={ci}>
+                        {ci === 0 && <td style={tdPops} rowSpan={grupo.candidatos.length}>
+                          <b>{grupo.codigo || "(código não identificado)"}</b><br />
+                          <span style={{ fontSize: 11.5, color: CORES.cinza }}>{grupo.tituloGuess}</span>
+                          {grupo.pendente && <div style={{ fontSize: 11.5, color: CORES.laranja, marginTop: 4 }}>⚠ {grupo.motivo}</div>}
+                        </td>}
+                        <td style={tdPops}>{cand.file.name}</td>
+                        <td style={tdPops}><input type="number" min={0} value={cand.revPalpite} onChange={(e) => atualizarRevisao(ai, gi, ci, e.target.value)} style={{ ...inputStyle, width: 60, padding: "4px 6px" }} /></td>
+                        <td style={tdPops}><a href={cand.blobUrl} target="_blank" rel="noreferrer">abrir</a></td>
+                      </tr>
+                    )))}
+                  </tbody>
+                </table>
+              )}
+            </Cartao>
+          ))}
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <Botao onClick={confirmarImportacao} disabled={importando}>{importando ? "Importando…" : "Importar"}</Botao>
+            <Botao tipo="contorno" onClick={() => setResultado(null)} disabled={importando}>Cancelar</Botao>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TelaExportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
+  const [gerando, setGerando] = useState(false);
+  const pops = dados.pops || [];
+  const areas = dados.popsAreas || [];
+
+  const gerar = async () => {
+    setGerando(true);
+    try {
+      const zip = new window.JSZip();
+      for (const p of pops) {
+        const pastaArea = areas.find((a) => a.pastaNorm === p.area)?.pastaNorm || p.area || "Sem área";
+        for (const h of (p.historico || [])) {
+          if (!h.arquivo) continue;
+          const nomeArq = nomeArquivoRevPop(p, h.rev);
+          try {
+            if (h.arquivo.dataUrl) {
+              zip.file(`${pastaArea}/${nomeArq}`, h.arquivo.dataUrl.split(",")[1] || "", { base64: true });
+            } else if (h.arquivo.url) {
+              const buf = await fetch(h.arquivo.url).then((r) => r.arrayBuffer());
+              zip.file(`${pastaArea}/${nomeArq}`, buf);
+            }
+          } catch (e) { /* um arquivo falhando não interrompe a exportação dos demais */ }
+        }
+      }
+      const blob = await zip.generateAsync({ type: "blob" });
+      const nome = `Procedimentos_Exportacao_${timestampArquivo()}.zip`;
+      baixarBlob(blob, nome);
+      let nd = comLog(dados, usuario, "Procedimentos", "Exportou procedimentos", `${pops.length} procedimento(s) — ${nome}`, "");
+      setDados(nd); await salvarDados(nd);
+      avisar(`Exportação gerada: ${nome}`);
+    } catch (e) {
+      avisar("Falha ao gerar a exportação: " + (e.message || String(e)));
+    } finally {
+      setGerando(false);
+    }
+  };
+
+  return (
+    <div>
+      <button onClick={aoVoltar} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: 12, padding: 0, fontFamily: "inherit" }}>← Voltar a Dados</button>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Exportação de Procedimentos</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>Gera um .zip com toda a estrutura padronizada do acervo: revisão atual (nome limpo) e revisões anteriores (sufixo "- rev_NN") de cada procedimento, organizadas por Área.</p>
+      <Cartao style={{ maxWidth: 480 }}>
+        <p style={{ fontSize: 13, color: CORES.azul, margin: "0 0 12px" }}>{pops.length} procedimento(s) no acervo.</p>
+        <Botao onClick={gerar} disabled={gerando}>{gerando ? "Gerando…" : "📤 Gerar exportação"}</Botao>
+      </Cartao>
+    </div>
+  );
+}
+
+// Menu da aba "Dados": duas opções — Importação e Exportação de Procedimentos.
+function TelaDadosProcedimentos({ dados, setDados, usuario }) {
+  const [tela, setTela] = useState("menu"); // "menu" | "importar" | "exportar"
+  if (tela === "importar") return <TelaImportacaoProcedimentos dados={dados} setDados={setDados} usuario={usuario} aoVoltar={() => setTela("menu")} />;
+  if (tela === "exportar") return <TelaExportacaoProcedimentos dados={dados} setDados={setDados} usuario={usuario} aoVoltar={() => setTela("menu")} />;
+  const opcao = { background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 10, padding: 28, textAlign: "center", cursor: "pointer" };
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
+      <div style={opcao} onClick={() => setTela("importar")}>
+        <div style={{ fontSize: 36 }}>📥</div>
+        <h3 style={{ color: CORES.azul, margin: "8px 0 4px" }}>Importação de Procedimentos</h3>
+        <p style={{ color: CORES.cinza, fontSize: 12.5, margin: 0 }}>Importa e organiza uma pasta existente de procedimentos.</p>
+      </div>
+      <div style={opcao} onClick={() => setTela("exportar")}>
+        <div style={{ fontSize: 36 }}>📤</div>
+        <h3 style={{ color: CORES.azul, margin: "8px 0 4px" }}>Exportação de Procedimentos</h3>
+        <p style={{ color: CORES.cinza, fontSize: 12.5, margin: 0 }}>Gera um .zip com a estrutura padronizada e atualizada do acervo.</p>
+      </div>
+    </div>
+  );
+}
+
 // Parâmetros (validade/alertas) + tabela de acessos: TODO usuário cadastrado no AURA 360° aparece
 // aqui, para o administrador decidir quem tem acesso, quais telas e quais papéis (Auditor/
 // Avaliador/SSMA) dentro deste Subsistema — igual ao padrão já usado em Compras e Cadastros.
@@ -1558,7 +1957,7 @@ function TelaConfigPops({ dados, setDados, usuario }) {
     <div>
       <h2 style={{ margin: "0 0 16px", color: CORES.azul }}>Configurações — Gestão de Procedimentos</h2>
       <div style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
-        {[["usuarios", "Usuários e Acessos"], ["parametros", "Parâmetros"]].map(([id, rot]) => (
+        {[["usuarios", "Usuários e Acessos"], ["parametros", "Parâmetros"], ["dados", "Dados"]].map(([id, rot]) => (
           <button key={id} onClick={() => setAba(id)} style={{
             padding: "8px 16px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit",
             background: aba === id ? CORES.azul : CORES.cinzaClaro, color: aba === id ? "#fff" : CORES.azul,
@@ -1626,6 +2025,8 @@ function TelaConfigPops({ dados, setDados, usuario }) {
           </Cartao>
         </div>
       )}
+
+      {aba === "dados" && <TelaDadosProcedimentos dados={dados} setDados={setDados} usuario={usuario} />}
     </div>
   );
 }
@@ -3845,6 +4246,53 @@ async function enviarAnexoSharePoint(arquivo) {
   if (!r.ok) throw new Error("upload do anexo falhou: " + r.status);
   const j = await r.json();
   return { nome: arquivo.name, url: j.webUrl };
+}
+
+// Arquivos de Procedimentos (POPs): pasta própria AuraProcedimentos, com subpastas por Área e por
+// Backups — mesmo princípio de garantirPastaAnexos/enviarAnexoSharePoint, mas separado da pasta de
+// anexos de Cadastros (domínios diferentes).
+let _pastaProcedimentosOk = false;
+async function garantirPastaProcedimentos() {
+  if (_pastaProcedimentosOk) return;
+  const site = await spSite();
+  try {
+    await gfetch(`/sites/${site}/drive/root/children`, {
+      method: "POST",
+      body: JSON.stringify({ name: "AuraProcedimentos", folder: {}, "@microsoft.graph.conflictBehavior": "fail" }),
+    });
+  } catch (e) { /* já existe */ }
+  _pastaProcedimentosOk = true;
+}
+// `caminho` é a Área (ex.: "01 - Britagem") — vira subpasta; o Graph cria a subpasta sozinho ao
+// subir o conteúdo (PUT por caminho cria os diretórios intermediários que faltarem).
+async function enviarProcedimentoSharePoint(arquivo, caminho) {
+  await garantirPastaProcedimentos();
+  const site = await spSite();
+  const nomeSeguro = arquivo.name.replace(/[^\w.\- ]+/g, "_");
+  const subpasta = (caminho || "").replace(/[^\w.\- \/]+/g, "_");
+  const t = await tokenGraph(["Sites.ReadWrite.All"]);
+  const caminhoCompleto = `AuraProcedimentos/${subpasta ? subpasta + "/" : ""}${nomeSeguro}`;
+  const r = await fetch(`https://graph.microsoft.com/v1.0/sites/${site}/drive/root:/${caminhoCompleto}:/content`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${t}`, "Content-Type": arquivo.type || "application/octet-stream" },
+    body: await arquivo.arrayBuffer(),
+  });
+  if (!r.ok) throw new Error("upload do procedimento falhou: " + r.status);
+  const j = await r.json();
+  return { nome: arquivo.name, url: j.webUrl };
+}
+// Backup .zip da importação: sobe para AuraProcedimentos/Backups no SharePoint (Modo real); em
+// Demonstração, o backup só existe como download imediato no navegador (sem pasta própria do SO).
+async function enviarBackupSharePoint(blobZip, nomeZip) {
+  await garantirPastaProcedimentos();
+  const site = await spSite();
+  const t = await tokenGraph(["Sites.ReadWrite.All"]);
+  const r = await fetch(`https://graph.microsoft.com/v1.0/sites/${site}/drive/root:/AuraProcedimentos/Backups/${nomeZip}:/content`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/zip" },
+    body: await blobZip.arrayBuffer(),
+  });
+  if (!r.ok) throw new Error("upload do backup falhou: " + r.status);
 }
 
 /* Mascote "Caquito" — usa ./caquito.png; se o arquivo não existir, some sem quebrar o layout */
