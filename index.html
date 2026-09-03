@@ -90,8 +90,8 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.11.0";
-const VERSAO_DATA = "2026-09-01"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
+const VERSAO_APP = "1.12.0";
+const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
@@ -1181,11 +1181,73 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
   );
 }
 
+// Cadastro de um novo POP direto no sistema (mesma estrutura de dados dos procedimentos já
+// existentes — código/título/área, revisão 00, histórico "Documento inicial", validade calculada a
+// partir de hoje). Só Administrador/Auditor acesssam (mesma capacidade de "editar" usada em
+// "Iniciar revisão" — ver PAPEL_POPS_PROCEDIMENTOS). Entra direto como "Publicado": não é uma
+// revisão em andamento, é a criação do documento em si.
+function ModalNovoProcedimentoPops({ dados, usuario, aoCriar, aoFechar }) {
+  const [codigo, setCodigo] = useState("");
+  const [titulo, setTitulo] = useState("");
+  const [area, setArea] = useState("");
+  const [descricao, setDescricao] = useState("Documento inicial");
+  const areas = dados.popsAreas || [];
+
+  const salvar = () => {
+    if (!codigo.trim()) { avisar("Informe o código do procedimento."); return; }
+    if (dados.pops.some((p) => p.codigo.trim().toLowerCase() === codigo.trim().toLowerCase())) { avisar("Já existe um procedimento com esse código."); return; }
+    if (!titulo.trim()) { avisar("Informe o título do procedimento."); return; }
+    if (!area) { avisar("Selecione a área."); return; }
+    const hojeBR = popsHojeBR(), hojeIso = popsHojeIso();
+    const novoPop = {
+      id: Math.max(0, ...dados.pops.map((p) => p.id)) + 1,
+      codigo: codigo.trim(), titulo: titulo.trim(), area, status: "PUBLICADO",
+      revisaoAtual: 0, dataRevisao: hojeBR, dataRevisaoIso: hojeIso,
+      validade: popsAddDias(hojeIso, dados.popsConfig?.validadeDias || 365),
+      singularUpload: false, criadoEm: new Date().toISOString(),
+      historico: [{ rev: 0, data: hojeBR, descricao: descricao.trim() || "Documento inicial" }],
+    };
+    aoCriar(novoPop);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(45,61,112,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 16 }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, maxWidth: 520, width: "100%", maxHeight: "88vh", overflowY: "auto", position: "relative" }}>
+        <button type="button" onClick={aoFechar} style={{ position: "absolute", top: 14, right: 16, border: "none", background: "none", fontSize: 20, color: CORES.cinza, cursor: "pointer" }}>×</button>
+        <h3 style={{ margin: "0 0 2px", color: CORES.azul }}>Novo Procedimento</h3>
+        <p style={{ fontSize: 12.5, color: CORES.cinza, margin: "0 0 16px" }}>Cadastra o documento como "Publicado", Rev 00, válido por {dados.popsConfig?.validadeDias || 365} dias a partir de hoje.</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <Campo label="Código" obrigatorio>
+            <input style={inputStyle} value={codigo} onChange={(e) => setCodigo(e.target.value)} placeholder="POP-BO-BEN-BEM-XXX" />
+          </Campo>
+          <Campo label="Título" obrigatorio>
+            <input style={inputStyle} value={titulo} onChange={(e) => setTitulo(e.target.value)} placeholder="Título do procedimento" />
+          </Campo>
+          <Campo label="Área" obrigatorio>
+            <select style={inputStyle} value={area} onChange={(e) => setArea(e.target.value)}>
+              <option value="">Selecione…</option>
+              {areas.map((a) => <option key={a.id} value={a.pastaNorm}>{a.pastaNorm}</option>)}
+            </select>
+          </Campo>
+          <Campo label="Descrição do histórico (Rev 00)">
+            <textarea style={{ ...inputStyle, minHeight: 60 }} value={descricao} onChange={(e) => setDescricao(e.target.value)} />
+          </Campo>
+        </div>
+        <div style={{ marginTop: 18, display: "flex", gap: 8 }}>
+          <Botao onClick={salvar}>Criar procedimento</Botao>
+          <Botao tipo="contorno" onClick={aoFechar}>Cancelar</Botao>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TelaProcedimentosPops({ dados, setDados, usuario }) {
   const [busca, setBusca] = useState("");
   const [fArea, setFArea] = useState("");
   const [fStatus, setFStatus] = useState("");
   const [popAberto, setPopAberto] = useState(null);
+  const [criando, setCriando] = useState(false);
 
   const pops = dados.pops || [];
   const areas = dados.popsAreas || [];
@@ -1195,6 +1257,9 @@ function TelaProcedimentosPops({ dados, setDados, usuario }) {
     (!fArea || p.area === fArea) &&
     (!fStatus || p.status === fStatus));
   const statusPresentes = [...new Set(pops.map((p) => p.status))];
+  // Só quem edita Procedimentos (Administrador/Auditor) pode cadastrar um novo — mesma capacidade
+  // usada em "Iniciar revisão" dentro do modal de detalhe.
+  const possoCriar = capacidadePops(usuario, PAPEL_POPS_PROCEDIMENTOS, dados) === "editar";
 
   const atualizarPop = async (popId, patch, acao, detalhe) => {
     let nd = { ...dados, pops: dados.pops.map((p) => (p.id === popId ? { ...p, ...patch } : p)) };
@@ -1202,12 +1267,25 @@ function TelaProcedimentosPops({ dados, setDados, usuario }) {
     setDados(nd); await salvarDados(nd);
   };
 
+  const criarPop = async (novoPop) => {
+    let nd = { ...dados, pops: [...dados.pops, novoPop] };
+    nd = comLog(nd, usuario, "Procedimentos", "Cadastrou procedimento", novoPop.codigo, novoPop.id);
+    setDados(nd); await salvarDados(nd);
+    setCriando(false);
+    avisar(`Procedimento ${novoPop.codigo} cadastrado.`);
+  };
+
   const popSelecionado = popAberto ? pops.find((p) => p.id === popAberto) : null;
 
   return (
     <div>
-      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Procedimentos</h2>
-      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 14px" }}>{lista.length} de {pops.length} procedimento(s){lista.length !== pops.length ? " (filtrado)" : ""}.</p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Procedimentos</h2>
+          <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 14px" }}>{lista.length} de {pops.length} procedimento(s){lista.length !== pops.length ? " (filtrado)" : ""}.</p>
+        </div>
+        {possoCriar && <Botao tipo="laranja" onClick={() => setCriando(true)}>+ Novo Procedimento</Botao>}
+      </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         <input style={{ ...inputStyle, minWidth: 240, width: "auto" }} placeholder="🔎 Buscar por código ou título…" value={busca} onChange={(e) => setBusca(e.target.value)} />
         <select style={{ ...inputStyle, width: "auto" }} value={fArea} onChange={(e) => setFArea(e.target.value)}>
@@ -1247,6 +1325,9 @@ function TelaProcedimentosPops({ dados, setDados, usuario }) {
       </Cartao>
       {popSelecionado && (
         <ModalProcedimentoPops pop={popSelecionado} dados={dados} usuario={usuario} atualizarPop={atualizarPop} aoFechar={() => setPopAberto(null)} />
+      )}
+      {criando && possoCriar && (
+        <ModalNovoProcedimentoPops dados={dados} usuario={usuario} aoCriar={criarPop} aoFechar={() => setCriando(false)} />
       )}
     </div>
   );
