@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.12.1";
+const VERSAO_APP = "1.12.2";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1091,10 +1091,17 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
   });
 
   const hist = pop.historico || [];
+  // O nome exibido/baixado de qualquer arquivo de revisão é sempre uma máscara código + nº da
+  // revisão (ex.: "POP-BO-BEN-BEM-001 - rev_03.docx") — nunca o nome original do arquivo que a
+  // pessoa enviou. Assim o número da revisão identifica o arquivo, em vez de depender de como cada
+  // auditor nomeou o próprio upload.
+  const nomeArquivoRev = (rev) => `${pop.codigo} - rev_${String(rev).padStart(2, "0")}.docx`;
   // Procedimento "atual" para baixar ao iniciar uma revisão = arquivo da revisão concluída mais
   // recente no histórico. Só existe a partir da 1ª revisão feita com upload por aqui — POPs
   // importados sem arquivo original não têm o que baixar (fica indicado na tela).
-  const arquivoAtual = [...hist].reverse().find((h) => h.arquivo?.dataUrl)?.arquivo || null;
+  const ultimoComArquivo = [...hist].reverse().find((h) => h.arquivo?.dataUrl);
+  const arquivoAtual = ultimoComArquivo ? { dataUrl: ultimoComArquivo.arquivo.dataUrl, nome: nomeArquivoRev(ultimoComArquivo.rev) } : null;
+  const revEmAndamento = pop.revisaoEmAndamento || (pop.revisaoAtual || 0) + 1;
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(45,61,112,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 16 }}>
@@ -1124,8 +1131,8 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
                 <input type="file" accept=".docx" onChange={enviarUpload} style={{ display: "none" }} />
               </label>
             ) : (
-              <div style={{ fontSize: 13, color: CORES.azul, marginBottom: 8 }}>✓ Versão revisada enviada: <b>{pop.trabalhoAnexo.nome}</b> em {new Date(pop.trabalhoEnviadoEm).toLocaleString("pt-BR")}
-                {pop.trabalhoAnexo.dataUrl && <> — <a href={pop.trabalhoAnexo.dataUrl} download={pop.trabalhoAnexo.nome}>baixar</a></>}</div>
+              <div style={{ fontSize: 13, color: CORES.azul, marginBottom: 8 }}>✓ Versão revisada enviada: <b>{nomeArquivoRev(revEmAndamento)}</b> em {new Date(pop.trabalhoEnviadoEm).toLocaleString("pt-BR")}
+                {pop.trabalhoAnexo.dataUrl && <> — <a href={pop.trabalhoAnexo.dataUrl} download={nomeArquivoRev(revEmAndamento)}>baixar</a></>}</div>
             )}
             {pop.trabalhoEnviado && (
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
@@ -1187,7 +1194,7 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
               <td style={tdPops}>{String(h.rev).padStart(2, "0")}</td>
               <td style={tdPops}>{h.data}</td>
               <td style={tdPops}>{h.descricao}</td>
-              <td style={tdPops}>{h.arquivo?.dataUrl ? <a href={h.arquivo.dataUrl} download={h.arquivo.nome}>⬇ {h.arquivo.nome}</a> : <span style={{ color: CORES.cinza }}>—</span>}</td>
+              <td style={tdPops}>{h.arquivo?.dataUrl ? <a href={h.arquivo.dataUrl} download={nomeArquivoRev(h.rev)} title={nomeArquivoRev(h.rev)}>⬇ Rev {String(h.rev).padStart(2, "0")}</a> : <span style={{ color: CORES.cinza }}>—</span>}</td>
             </tr>
           )) : <tr><td colSpan={4} style={{ ...tdPops, color: CORES.cinza }}>—</td></tr>}</tbody>
         </table>
