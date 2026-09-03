@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.14.0";
+const VERSAO_APP = "1.14.1";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1656,7 +1656,7 @@ function agruparProcedimentosPorArquivos(arquivos) {
   });
 }
 
-function TelaImportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
+function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciais, aoVoltar }) {
   const [resultado, setResultado] = useState(null);
   const [importando, setImportando] = useState(false);
   const [resumo, setResumo] = useState(null);
@@ -1667,9 +1667,15 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
     resultado.areas.forEach((a) => a.grupos.forEach((g) => g.candidatos.forEach((c) => URL.revokeObjectURL(c.blobUrl))));
   }, [resultado]);
 
-  const analisar = (e) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
+  // A pasta já pode ter sido escolhida antes de chegar nesta tela (clicando direto em
+  // "Importação de Procedimentos" no menu "Dados" — ver TelaDadosProcedimentos): nesse caso já
+  // chega aqui com os arquivos prontos, direto na pré-visualização, sem precisar clicar de novo.
+  useEffect(() => {
+    if (arquivosIniciais && arquivosIniciais.length) analisarArquivos(arquivosIniciais);
+    // eslint-disable-next-line
+  }, []);
+
+  const analisarArquivos = (files) => {
     if (files.length === 0) return;
     let origemNome = "";
     const porPasta = new Map();
@@ -1702,6 +1708,13 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
     const totalPendencias = areas.reduce((s, a) => s + (a.pendente ? 1 : 0) + a.grupos.filter((g) => g.pendente).length, 0);
     setResultado({ origemNome, areas, totalArquivos, totalProcedimentos, totalArquivosDocx, totalPendencias });
     setResumo(null);
+  };
+
+  // Trocar de pasta a partir desta tela (ex.: depois de já ter visto a pré-visualização).
+  const analisar = (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    analisarArquivos(files);
   };
 
   const atualizarRevisao = (ai, gi, ci, valor) => {
@@ -1815,6 +1828,10 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
             <p style={{ fontSize: 13, color: CORES.azul, margin: 0 }}>
               Origem: <b>{resultado.origemNome}</b> · Áreas: <b>{resultado.areas.length}</b> · Arquivos: <b>{resultado.totalArquivos}</b> · Procedimentos identificados: <b>{resultado.totalProcedimentos}</b> · Pendências: <b>{resultado.totalPendencias}</b>
             </p>
+            <label style={{ display: "inline-block", cursor: "pointer", marginTop: 8 }}>
+              <span style={{ fontSize: 12.5, color: CORES.laranja, fontWeight: 700, pointerEvents: "none" }}>📂 Trocar pasta de origem</span>
+              <input type="file" webkitdirectory="" directory="" multiple onChange={analisar} style={{ display: "none" }} />
+            </label>
           </Cartao>
           {resultado.areas.map((area, ai) => (
             <Cartao key={area.pastaOriginal} style={{ marginBottom: 14, borderTop: `4px solid ${area.pendente ? CORES.laranja : CORES.azul}` }}>
@@ -1906,15 +1923,30 @@ function TelaExportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
   );
 }
 
-// Menu da aba "Dados": duas opções — Importação e Exportação de Procedimentos.
+// Menu da aba "Dados": duas opções — Importação e Exportação de Procedimentos. O input de pasta
+// mora aqui (não dentro da tela de Importação) porque abrir o seletor nativo exige clicar direto
+// nele dentro do MESMO gesto do usuário — clicar no card já escolhe a pasta e entra direto na
+// pré-visualização, sem uma tela intermediária só com um botão "Selecionar pasta".
 function TelaDadosProcedimentos({ dados, setDados, usuario }) {
   const [tela, setTela] = useState("menu"); // "menu" | "importar" | "exportar"
-  if (tela === "importar") return <TelaImportacaoProcedimentos dados={dados} setDados={setDados} usuario={usuario} aoVoltar={() => setTela("menu")} />;
+  const [arquivosImportacao, setArquivosImportacao] = useState(null);
+  const inputImportacaoRef = useRef(null);
+
+  const aoSelecionarPastaImportacao = (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length === 0) return; // usuário cancelou o seletor — fica no menu
+    setArquivosImportacao(files);
+    setTela("importar");
+  };
+
+  if (tela === "importar") return <TelaImportacaoProcedimentos dados={dados} setDados={setDados} usuario={usuario} arquivosIniciais={arquivosImportacao} aoVoltar={() => { setTela("menu"); setArquivosImportacao(null); }} />;
   if (tela === "exportar") return <TelaExportacaoProcedimentos dados={dados} setDados={setDados} usuario={usuario} aoVoltar={() => setTela("menu")} />;
   const opcao = { background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 10, padding: 28, textAlign: "center", cursor: "pointer" };
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
-      <div style={opcao} onClick={() => setTela("importar")}>
+      <input ref={inputImportacaoRef} type="file" webkitdirectory="" directory="" multiple onChange={aoSelecionarPastaImportacao} style={{ display: "none" }} />
+      <div style={opcao} onClick={() => inputImportacaoRef.current.click()}>
         <div style={{ fontSize: 36 }}>📥</div>
         <h3 style={{ color: CORES.azul, margin: "8px 0 4px" }}>Importação de Procedimentos</h3>
         <p style={{ color: CORES.cinza, fontSize: 12.5, margin: 0 }}>Importa e organiza uma pasta existente de procedimentos.</p>
