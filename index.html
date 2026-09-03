@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.12.3";
+const VERSAO_APP = "1.13.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -282,6 +282,9 @@ const PAPEL_POPS_OPCOES = [
 const PAPEL_POPS_PROCEDIMENTOS = { administrador: "editar", auditor: "editar", avaliador: "ver", ssma: "ver", leitor: "ver" };
 const PAPEL_POPS_SSMA = { administrador: "oculto", auditor: "oculto", avaliador: "oculto", ssma: "editar", leitor: "oculto" };
 const PAPEL_POPS_LISTA_MESTRA = { administrador: "editar", auditor: "ver", avaliador: "ver", ssma: "ver", leitor: "ver" };
+// Pendências — tela ainda não implementada (reservada para uso futuro); só Administrador e
+// Auditor devem enxergar o item no menu, os demais papéis nem veem a opção.
+const PAPEL_POPS_PENDENCIAS = { administrador: "editar", auditor: "editar", avaliador: "oculto", ssma: "oculto", leitor: "oculto" };
 const NIVEL_POPS = { oculto: 0, ver: 1, editar: 2 };
 const capacidadePops = (u, mapa, dados) => {
   if (EH_GM(u)) return existeAdministradorPops(dados) ? (mapa.leitor || "oculto") : "editar";
@@ -1514,6 +1517,18 @@ function TelaListaMestraPops({ dados }) {
 }
 
 // Configurações do Subsistema Gestão de Procedimentos — só GM ou administrador delegado.
+// Pendências — reservada para uso futuro (ainda sem funcionalidade). Só aparece no menu para
+// Administrador/Auditor (ver PAPEL_POPS_PENDENCIAS); os demais papéis nem veem o item.
+function TelaPendenciasPops() {
+  return (
+    <Cartao style={{ maxWidth: 560, margin: "24px auto", textAlign: "center", padding: "40px 32px", borderTop: `4px solid ${CORES.laranja}` }}>
+      <div style={{ fontSize: 44 }}>🚧</div>
+      <h2 style={{ color: CORES.azul, margin: "10px 0 6px" }}>Pendências</h2>
+      <p style={{ color: CORES.cinza, fontSize: 14, margin: 0 }}>Em construção — será utilizado em breve.</p>
+    </Cartao>
+  );
+}
+
 // Parâmetros (validade/alertas) + tabela de acessos: TODO usuário cadastrado no AURA 360° aparece
 // aqui, para o administrador decidir quem tem acesso, quais telas e quais papéis (Auditor/
 // Avaliador/SSMA) dentro deste Subsistema — igual ao padrão já usado em Compras e Cadastros.
@@ -1541,8 +1556,7 @@ function TelaConfigPops({ dados, setDados, usuario }) {
 
   return (
     <div>
-      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Configurações — Gestão de Procedimentos</h2>
-      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>Parâmetros do Subsistema e quem tem acesso a ele — visível só para GM e administradores delegados deste Subsistema.</p>
+      <h2 style={{ margin: "0 0 16px", color: CORES.azul }}>Configurações — Gestão de Procedimentos</h2>
       <div style={{ display: "flex", gap: 8, marginBottom: 18, borderBottom: `1px solid ${CORES.cinzaClaro}`, paddingBottom: 12 }}>
         {[["usuarios", "Usuários e Acessos"], ["parametros", "Parâmetros"]].map(([id, rot]) => (
           <button key={id} onClick={() => setAba(id)} style={{
@@ -1565,13 +1579,6 @@ function TelaConfigPops({ dados, setDados, usuario }) {
 
       {aba === "usuarios" && (
         <div>
-          <p style={{ fontSize: 12.5, color: CORES.cinza, margin: "0 0 12px" }}>
-            Todo usuário cadastrado no AURA 360° Planta aparece aqui, inclusive o(s) GM.
-            O acesso ao Subsistema é liberado pelos Papéis — sem nenhum marcado, o usuário não vê Gestão de Procedimentos.
-            Um usuário pode acumular vários papéis ao mesmo tempo (ex.: Administrador e Auditor e Avaliador).
-            {" "}Enquanto nenhum Administrador estiver definido, o GM tem acesso total (modo inicial); ao cadastrar o
-            primeiro Administrador, o GM passa a ser tratado como Leitor aqui dentro.
-          </p>
           <Cartao style={{ padding: 0, overflow: "auto" }}>
             <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 640 }}>
               <thead><tr>
@@ -4415,10 +4422,12 @@ function App() {
   // Gestão de Procedimentos (Subsistema de Segurança) — telas visíveis dependem do Papel único do
   // usuário (Administrador/Auditor/Avaliador/SSMA/Leitor), não mais de um checklist de features.
   const capProcedimentosPops = capacidadePops(usuarioAtual, PAPEL_POPS_PROCEDIMENTOS, dados);
+  const capPendenciasPops = capacidadePops(usuarioAtual, PAPEL_POPS_PENDENCIAS, dados);
   const capSSMAPops = capacidadePops(usuarioAtual, PAPEL_POPS_SSMA, dados);
   const capListaMestraPops = capacidadePops(usuarioAtual, PAPEL_POPS_LISTA_MESTRA, dados);
   const MENU_POPS_VISIVEL = [
     ...(capProcedimentosPops !== "oculto" ? [{ id: "PROCEDIMENTOS", rotulo: "Procedimentos", icone: "📄" }] : []),
+    ...(capPendenciasPops !== "oculto" ? [{ id: "PENDENCIAS", rotulo: "Pendências", icone: "⏳" }] : []),
     ...(capSSMAPops !== "oculto" ? [{ id: "SSMA", rotulo: "SSMA", icone: "🛡️" }] : []),
     ...(capListaMestraPops !== "oculto" ? [{ id: "LISTA_MESTRA", rotulo: "Lista Mestra", icone: "📋" }] : []),
   ];
@@ -4448,7 +4457,7 @@ function App() {
 
   // Trilha de navegação (breadcrumb) — reflete onde o usuário está dentro do portal
   const ROTULOS_TELA_ADMIN = { MENU: "Painel", PAINEL: "Painel", COMPRAS: "Solicitação de Compras", CADASTROS: "Solicitação de Cadastros", RELATORIOS: "Relatórios", CONFIGURACOES: "Configurações" };
-  const ROTULOS_TELA_POPS = { MENU: "Painel", PAINEL: "Painel", PROCEDIMENTOS: "Procedimentos", SSMA: "SSMA", LISTA_MESTRA: "Lista Mestra", CONFIGURACOES: "Configurações" };
+  const ROTULOS_TELA_POPS = { MENU: "Painel", PAINEL: "Painel", PROCEDIMENTOS: "Procedimentos", PENDENCIAS: "Pendências", SSMA: "SSMA", LISTA_MESTRA: "Lista Mestra", CONFIGURACOES: "Configurações" };
   const ROTULOS_ABA_CONFIG = { usuarios: "Usuários", registros: "Registros (Auditoria)", sobre: "Sobre" };
   const irParaHome = () => { setArea(null); setTela("MENU"); setAppAdmin(null); setSistemaEmbutido(null); };
   const trilha = (() => {
@@ -4551,6 +4560,7 @@ function App() {
             <div style={{ minWidth: 0 }}>
               {(tela === "MENU" || tela === "PAINEL") && <TelaPainelPops dados={dados} />}
               {tela === "PROCEDIMENTOS" && <TelaProcedimentosPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
+              {tela === "PENDENCIAS" && capPendenciasPops !== "oculto" && <TelaPendenciasPops />}
               {tela === "SSMA" && <TelaSSMAPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
               {tela === "LISTA_MESTRA" && <TelaListaMestraPops dados={dados} />}
               {tela === "CONFIGURACOES" && souAdminDePops && <TelaConfigPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
