@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.12.0";
+const VERSAO_APP = "1.12.1";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1034,20 +1034,24 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
 
   const rodar = async (fn) => { try { await fn(); } catch (e) { avisar(e.message || String(e)); } };
 
+  // O modal NÃO fecha sozinho após uma ação (iniciar, enviar, aprovar…) — só o × fecha. Assim a
+  // pessoa acompanha, na mesma tela, a revisão passar de uma etapa para a próxima (ex.: ao iniciar,
+  // já aparece a opção de baixar o procedimento atual, enviar a versão revisada e escolher o
+  // avaliador, sem precisar reabrir o POP a cada passo).
   const iniciar = () => rodar(() => atualizarPop(pop.id, {
     statusAntesRevisao: pop.status, status: "EM_REVISAO", auditorEmail: usuario.email,
     revisaoEmAndamento: (pop.revisaoAtual || 0) + 1, avaliadorEmail: null, avaliacao: null, descricaoPendente: null,
     singularUpload: false, singularEm: null, singularPorNome: null, ssmaEnviadoEm: null,
     trabalhoAnexo: null, trabalhoEnviado: false, trabalhoEnviadoEm: null, bloqueadoEdicao: false, avaliacaoSSMA: null,
-  }, "Iniciou revisão", `${pop.codigo} — Rev ${String((pop.revisaoAtual || 0) + 1).padStart(2, "0")}`).then(aoFechar));
+  }, "Iniciou revisão", `${pop.codigo} — Rev ${String((pop.revisaoAtual || 0) + 1).padStart(2, "0")}`));
 
-  const assumirRevisao = () => rodar(() => atualizarPop(pop.id, { auditorEmail: usuario.email }, "Assumiu a revisão", pop.codigo).then(aoFechar));
-  const assumirAvaliacao = () => rodar(() => atualizarPop(pop.id, { avaliadorEmail: usuario.email }, "Assumiu a avaliação", pop.codigo).then(aoFechar));
+  const assumirRevisao = () => rodar(() => atualizarPop(pop.id, { auditorEmail: usuario.email }, "Assumiu a revisão", pop.codigo));
+  const assumirAvaliacao = () => rodar(() => atualizarPop(pop.id, { avaliadorEmail: usuario.email }, "Assumiu a avaliação", pop.codigo));
 
   const cancelarRevisao = () => rodar(() => atualizarPop(pop.id, {
     status: pop.statusAntesRevisao || "PUBLICADO", statusAntesRevisao: null, auditorEmail: null, avaliadorEmail: null,
     avaliacao: null, descricaoPendente: null, trabalhoAnexo: null, trabalhoEnviado: false, trabalhoEnviadoEm: null, revisaoEmAndamento: null,
-  }, "Cancelou a revisão", pop.codigo).then(aoFechar));
+  }, "Cancelou a revisão", pop.codigo));
 
   const enviarUpload = (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -1055,7 +1059,7 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
     const reader = new FileReader();
     reader.onload = () => rodar(() => atualizarPop(pop.id, {
       trabalhoAnexo: { nome: f.name, dataUrl: reader.result }, trabalhoEnviado: true, trabalhoEnviadoEm: new Date().toISOString(),
-    }, "Enviou versão revisada (upload)", f.name).then(aoFechar));
+    }, "Enviou versão revisada (upload)", f.name));
     reader.readAsDataURL(f);
   };
 
@@ -1063,11 +1067,10 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
     if (!avaliadorEsc) { avisar("Selecione um avaliador."); return; }
     await atualizarPop(pop.id, { status: "AGUARDANDO_AVALIACAO", avaliadorEmail: avaliadorEsc, bloqueadoEdicao: true },
       "Enviou para avaliação", `${pop.codigo} → ${avaliadorEsc}`);
-    aoFechar();
   });
 
   const aprovar = () => rodar(() => atualizarPop(pop.id, { status: "APROVADO", avaliacao: { aprovado: true, obs: "", avaliadorNome: usuario.nome, data: new Date().toISOString() } },
-    "Aprovou a avaliação", pop.codigo).then(aoFechar));
+    "Aprovou a avaliação", pop.codigo));
 
   const reprovar = () => rodar(async () => {
     if (!textoObs.trim()) { avisar("Justificativa obrigatória ao reprovar."); return; }
@@ -1075,7 +1078,7 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
       status: "EM_REVISAO", bloqueadoEdicao: false, trabalhoEnviado: false,
       avaliacao: { aprovado: false, obs: textoObs, avaliadorNome: usuario.nome, data: new Date().toISOString() },
     }, "Reprovou / solicitou ajustes", textoObs);
-    aoFechar();
+    setModoObs(null); setTextoObs("");
   });
 
   const confirmar = () => rodar(async () => {
@@ -1084,10 +1087,14 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
       descricaoPendente: textoObs, status: "AGUARDANDO_APROVACAO_SSMA", bloqueadoEdicao: true,
       ssmaEnviadoEm: new Date().toISOString(), singularUpload: false, singularEm: null, singularPorNome: null,
     }, "Confirmou a revisão (enviado ao SSMA)", textoObs);
-    aoFechar();
+    setModoObs(null); setTextoObs("");
   });
 
   const hist = pop.historico || [];
+  // Procedimento "atual" para baixar ao iniciar uma revisão = arquivo da revisão concluída mais
+  // recente no histórico. Só existe a partir da 1ª revisão feita com upload por aqui — POPs
+  // importados sem arquivo original não têm o que baixar (fica indicado na tela).
+  const arquivoAtual = [...hist].reverse().find((h) => h.arquivo?.dataUrl)?.arquivo || null;
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(45,61,112,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 16 }}>
@@ -1104,10 +1111,17 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
 
         {pop.status === "EM_REVISAO" && meAuditor && (
           <div style={{ background: CORES.cinzaClaro, borderRadius: 8, padding: 14, marginTop: 8 }}>
+            <div style={{ marginBottom: 10, fontSize: 13 }}>
+              {arquivoAtual ? (
+                <a href={arquivoAtual.dataUrl} download={arquivoAtual.nome} style={{ color: CORES.azul, fontWeight: 700 }}>⬇ Baixar procedimento atual ({arquivoAtual.nome})</a>
+              ) : (
+                <span style={{ color: CORES.cinza, fontStyle: "italic" }}>Nenhum arquivo do procedimento atual disponível neste sistema (documento original não foi carregado aqui) — consulte o Singular.</span>
+              )}
+            </div>
             {!pop.trabalhoAnexo || !pop.trabalhoEnviado ? (
-              <label style={{ display: "inline-block" }}>
+              <label style={{ display: "inline-block", cursor: "pointer" }}>
                 <Botao tipo="contorno" style={{ pointerEvents: "none" }}>⬆ Enviar versão revisada (.docx)</Botao>
-                <input type="file" accept=".docx" onChange={enviarUpload} style={{ display: "block", marginTop: 6 }} />
+                <input type="file" accept=".docx" onChange={enviarUpload} style={{ display: "none" }} />
               </label>
             ) : (
               <div style={{ fontSize: 13, color: CORES.azul, marginBottom: 8 }}>✓ Versão revisada enviada: <b>{pop.trabalhoAnexo.nome}</b> em {new Date(pop.trabalhoEnviadoEm).toLocaleString("pt-BR")}
@@ -1167,8 +1181,15 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
 
         <h4 style={{ margin: "18px 0 6px", fontSize: 14, color: CORES.azul }}>Histórico de Revisões</h4>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead><tr><th style={tdPops}>Nº</th><th style={tdPops}>Data</th><th style={tdPops}>Descrição</th></tr></thead>
-          <tbody>{hist.length ? hist.map((h, i) => <tr key={i}><td style={tdPops}>{String(h.rev).padStart(2, "0")}</td><td style={tdPops}>{h.data}</td><td style={tdPops}>{h.descricao}</td></tr>) : <tr><td colSpan={3} style={{ ...tdPops, color: CORES.cinza }}>—</td></tr>}</tbody>
+          <thead><tr><th style={tdPops}>Nº</th><th style={tdPops}>Data</th><th style={tdPops}>Descrição</th><th style={tdPops}>Arquivo</th></tr></thead>
+          <tbody>{hist.length ? hist.map((h, i) => (
+            <tr key={i}>
+              <td style={tdPops}>{String(h.rev).padStart(2, "0")}</td>
+              <td style={tdPops}>{h.data}</td>
+              <td style={tdPops}>{h.descricao}</td>
+              <td style={tdPops}>{h.arquivo?.dataUrl ? <a href={h.arquivo.dataUrl} download={h.arquivo.nome}>⬇ {h.arquivo.nome}</a> : <span style={{ color: CORES.cinza }}>—</span>}</td>
+            </tr>
+          )) : <tr><td colSpan={4} style={{ ...tdPops, color: CORES.cinza }}>—</td></tr>}</tbody>
         </table>
         {pop.avaliacao && !pop.avaliacao.aprovado && (
           <p style={{ fontSize: 12.5, color: "#990000", marginTop: 10 }}><b>Última reprovação (avaliador):</b> {pop.avaliacao.obs}</p>
@@ -1352,9 +1373,12 @@ function TelaSSMAPops({ dados, setDados, usuario }) {
     const novaRev = p.revisaoEmAndamento || (p.revisaoAtual || 0) + 1;
     const dataBR = popsHojeBR();
     await atualizarPop(p.id, {
-      historico: [...(p.historico || []), { rev: novaRev, data: dataBR, descricao: p.descricaoPendente || "" }],
+      // O arquivo enviado pelo auditor nesta revisão fica preso à própria linha do histórico —
+      // é o que permite baixar cada versão anterior depois, e também é a fonte do "procedimento
+      // atual" oferecido para download na próxima revisão (ver arquivoAtual no modal de detalhe).
+      historico: [...(p.historico || []), { rev: novaRev, data: dataBR, descricao: p.descricaoPendente || "", arquivo: p.trabalhoAnexo || null }],
       revisaoAtual: novaRev, dataRevisao: dataBR, dataRevisaoIso: popsHojeIso(), validade: popsAddDias(popsHojeIso(), dados.popsConfig?.validadeDias || 365),
-      status: "CONCLUIDO", bloqueadoEdicao: false, revisaoEmAndamento: null, descricaoPendente: null, trabalhoEnviado: false,
+      status: "CONCLUIDO", bloqueadoEdicao: false, revisaoEmAndamento: null, descricaoPendente: null, trabalhoEnviado: false, trabalhoAnexo: null,
     }, "Concluiu (aprovado pelo SSMA)", `${p.codigo} — Rev ${String(novaRev).padStart(2, "0")}`);
   };
 
