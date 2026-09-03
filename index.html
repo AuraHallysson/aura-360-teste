@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.14.1";
+const VERSAO_APP = "1.15.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1600,6 +1600,38 @@ function ehPastaListaDeProcedimentos(nomeOriginal) {
   const limpo = (nomeOriginal || "").replace(/^\d+\s*[-–—]?\s*/, "").trim().toLowerCase().replace(/\s+/g, " ");
   return limpo === "lista de procedimentos";
 }
+// Reconhece a pasta especial "Modelo - POP" (também não é uma Área) por variações comuns de
+// grafia/espaçamento — fica imediatamente antes de "Lista de Procedimentos" na numeração final.
+function ehPastaModeloPop(nomeOriginal) {
+  const limpo = (nomeOriginal || "").replace(/^\d+\s*[-–—]?\s*/, "").trim().toLowerCase().replace(/\s+/g, " ").replace(/\s*-\s*/g, " - ");
+  return limpo === "modelo - pop" || limpo === "modelo pop";
+}
+// Garante índice único entre as Áreas — nunca pode existir duas pastas de Área com o mesmo
+// número (regra do prompt). Preserva o índice original de quem "chegou primeiro" (ordenado pelo
+// próprio índice original) e empurra qualquer área conflitante pro próximo índice livre,
+// deixando isso registrado como pendência (transparência > correção silenciosa). Áreas sem
+// índice identificável (pendência à parte) não entram nessa disputa.
+function resolverIndicesUnicosDeAreas(areas) {
+  const usados = new Set();
+  const ordenadas = [...areas].sort((a, b) => {
+    if (a.indice === null && b.indice === null) return 0;
+    if (a.indice === null) return 1;
+    if (b.indice === null) return -1;
+    return a.indice - b.indice;
+  });
+  return ordenadas.map((a) => {
+    if (a.indice === null) return a;
+    let novoIndice = a.indice;
+    const conflitou = usados.has(novoIndice);
+    while (usados.has(novoIndice)) novoIndice++;
+    usados.add(novoIndice);
+    if (!conflitou) return a;
+    return {
+      ...a, indice: novoIndice, pastaNorm: `${String(novoIndice).padStart(2, "0")} - ${a.nome}`, pendente: true,
+      motivo: `Índice ${String(a.indice).padStart(2, "0")} já estava em uso por outra Área — renumerado para ${String(novoIndice).padStart(2, "0")}`,
+    };
+  });
+}
 // Palpite de revisão só pelo NOME do arquivo (regra do prompt: nome é só apoio, nunca decide por
 // si só) — procura "Rev01", "Rev.00", "Rev 1", etc. null quando o nome não traz nenhum número.
 function palpiteRevisaoPorNome(nomeArquivo) {
@@ -1687,21 +1719,39 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
       if (!porPasta.has(pasta)) porPasta.set(pasta, []);
       porPasta.get(pasta).push(f);
     });
-    const areas = [];
-    let pastaListaProcedimentos = null;
+    let areasCandidatas = [];
+    let pastaListaProcedimentos = null, pastaModeloPop = null;
     [...porPasta.entries()].forEach(([pastaOriginal, arquivosPasta]) => {
       if (ehPastaListaDeProcedimentos(pastaOriginal)) { pastaListaProcedimentos = { pastaOriginal, arquivosPasta }; return; }
-      areas.push({ pastaOriginal, ...normalizarNomeArea(pastaOriginal), grupos: agruparProcedimentosPorArquivos(arquivosPasta) });
+      if (ehPastaModeloPop(pastaOriginal)) { pastaModeloPop = { pastaOriginal, arquivosPasta }; return; }
+      areasCandidatas.push({ pastaOriginal, ...normalizarNomeArea(pastaOriginal), grupos: agruparProcedimentosPorArquivos(arquivosPasta) });
     });
-    if (pastaListaProcedimentos) {
-      const maiorIndice = Math.max(0, ...areas.filter((a) => a.indice !== null).map((a) => a.indice));
+    // Nenhuma Área pode repetir índice — resolve antes de calcular Lista de Procedimentos/Modelo -
+    // POP, que dependem do maior índice já sem conflitos.
+    areasCandidatas = resolverIndicesUnicosDeAreas(areasCandidatas);
+    const maiorIndice = Math.max(0, ...areasCandidatas.filter((a) => a.indice !== null).map((a) => a.indice));
+    const areasEspeciais = [];
+    if (pastaListaProcedimentos || pastaModeloPop) {
       const indiceLista = maiorIndice + 10;
-      areas.push({
-        pastaOriginal: pastaListaProcedimentos.pastaOriginal, indice: indiceLista, nome: "Lista de Procedimentos",
-        pastaNorm: `${String(indiceLista).padStart(2, "0")} - Lista de Procedimentos`, pendente: false, motivo: null,
-        grupos: [], ehListaProcedimentos: true, arquivosBrutos: pastaListaProcedimentos.arquivosPasta,
-      });
+      const indiceModelo = indiceLista - 1; // Modelo - POP fica imediatamente antes da Lista de Procedimentos
+      if (pastaModeloPop) {
+        areasEspeciais.push({
+          pastaOriginal: pastaModeloPop.pastaOriginal, indice: indiceModelo, nome: "Modelo - POP",
+          pastaNorm: `${String(indiceModelo).padStart(2, "0")} - Modelo - POP`, pendente: false, motivo: null,
+          grupos: [], ehModeloPop: true, arquivosBrutos: pastaModeloPop.arquivosPasta,
+        });
+      }
+      if (pastaListaProcedimentos) {
+        areasEspeciais.push({
+          pastaOriginal: pastaListaProcedimentos.pastaOriginal, indice: indiceLista, nome: "Lista de Procedimentos",
+          pastaNorm: `${String(indiceLista).padStart(2, "0")} - Lista de Procedimentos`, pendente: false, motivo: null,
+          grupos: [], ehListaProcedimentos: true, arquivosBrutos: pastaListaProcedimentos.arquivosPasta,
+        });
+      }
     }
+    // Ordena por índice pra exibição — Áreas primeiro, Modelo - POP e Lista de Procedimentos por
+    // último (na posição certa, por construção); pendências sem índice ficam ao final.
+    const areas = [...areasCandidatas, ...areasEspeciais].sort((a, b) => (a.indice ?? Infinity) - (b.indice ?? Infinity));
     const totalArquivos = files.length;
     const totalProcedimentos = areas.reduce((s, a) => s + a.grupos.length, 0);
     const totalArquivosDocx = areas.reduce((s, a) => s + a.grupos.reduce((s2, g) => s2 + g.candidatos.length, 0), 0);
@@ -1733,7 +1783,7 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     try {
       const zipBackup = new window.JSZip();
       resultado.areas.forEach((a) => {
-        const arquivosDaArea = a.ehListaProcedimentos ? (a.arquivosBrutos || []) : a.grupos.flatMap((g) => g.candidatos.map((c) => c.file));
+        const arquivosDaArea = (a.ehListaProcedimentos || a.ehModeloPop) ? (a.arquivosBrutos || []) : a.grupos.flatMap((g) => g.candidatos.map((c) => c.file));
         arquivosDaArea.forEach((f) => zipBackup.file(f.webkitRelativePath || f.name, f));
       });
       const blobBackup = await zipBackup.generateAsync({ type: "blob" });
@@ -1755,7 +1805,7 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
           popsAreasAtual = [...popsAreasAtual, { id: Math.max(0, ...popsAreasAtual.map((a) => a.id), 0) + 1, numero: area.indice, nome: area.nome, pastaNorm: area.pastaNorm }];
         }
         if (area.pendente) pendencias++;
-        if (area.ehListaProcedimentos) continue;
+        if (area.ehListaProcedimentos || area.ehModeloPop) continue;
         for (const grupo of area.grupos) {
           if (grupo.pendente) pendencias++;
           if (!grupo.codigo) { pendencias++; continue; } // sem código identificável: preserva no backup, não cria pop sozinho
@@ -1838,8 +1888,8 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
               <h3 style={{ margin: "0 0 4px", color: CORES.azul, fontSize: 15 }}>{area.pastaNorm}</h3>
               {area.pastaOriginal !== area.pastaNorm && <p style={{ fontSize: 11.5, color: CORES.cinza, margin: "0 0 8px" }}>Pasta original: "{area.pastaOriginal}"</p>}
               {area.pendente && <p style={{ fontSize: 12, color: CORES.laranja, margin: "0 0 8px" }}>⚠ Pendência: {area.motivo}</p>}
-              {area.ehListaProcedimentos ? (
-                <p style={{ fontSize: 12.5, color: CORES.cinza, margin: 0 }}>Pasta especial "Lista de Procedimentos" — {area.arquivosBrutos.length} arquivo(s), não entram como procedimentos do acervo.</p>
+              {(area.ehListaProcedimentos || area.ehModeloPop) ? (
+                <p style={{ fontSize: 12.5, color: CORES.cinza, margin: 0 }}>Pasta especial "{area.nome}" — {area.arquivosBrutos.length} arquivo(s), não entram como procedimentos do acervo.</p>
               ) : area.grupos.length === 0 ? (
                 <p style={{ fontSize: 12.5, color: CORES.cinza, margin: 0 }}>Nenhum arquivo .docx reconhecido nesta pasta.</p>
               ) : (
