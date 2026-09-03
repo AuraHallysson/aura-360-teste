@@ -90,7 +90,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.12.2";
+const VERSAO_APP = "1.12.3";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1091,11 +1091,13 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
   });
 
   const hist = pop.historico || [];
-  // O nome exibido/baixado de qualquer arquivo de revisão é sempre uma máscara código + nº da
-  // revisão (ex.: "POP-BO-BEN-BEM-001 - rev_03.docx") — nunca o nome original do arquivo que a
-  // pessoa enviou. Assim o número da revisão identifica o arquivo, em vez de depender de como cada
-  // auditor nomeou o próprio upload.
-  const nomeArquivoRev = (rev) => `${pop.codigo} - rev_${String(rev).padStart(2, "0")}.docx`;
+  // O nome exibido/baixado de um arquivo de revisão nunca é o nome original que a pessoa enviou —
+  // é uma máscara pelo código do POP. A revisão ATUAL (a mais recente já concluída, pop.revisaoAtual)
+  // usa só o código, sem número — é "o procedimento" — e cada revisão anterior (já superada) ganha o
+  // sufixo "- rev_NN" (ex.: "POP-BO-BEN-BEM-001.docx" é a atual; "POP-BO-BEN-BEM-001 - rev_02.docx"
+  // é uma revisão anterior). Recalculado a cada render, então quando uma nova revisão é concluída a
+  // anterior passa a ganhar o sufixo automaticamente, sem precisar reescrever o histórico salvo.
+  const nomeArquivoRev = (rev) => rev === (pop.revisaoAtual ?? 0) ? `${pop.codigo}.docx` : `${pop.codigo} - rev_${String(rev).padStart(2, "0")}.docx`;
   // Procedimento "atual" para baixar ao iniciar uma revisão = arquivo da revisão concluída mais
   // recente no histórico. Só existe a partir da 1ª revisão feita com upload por aqui — POPs
   // importados sem arquivo original não têm o que baixar (fica indicado na tela).
@@ -1188,15 +1190,18 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
 
         <h4 style={{ margin: "18px 0 6px", fontSize: 14, color: CORES.azul }}>Histórico de Revisões</h4>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead><tr><th style={tdPops}>Nº</th><th style={tdPops}>Data</th><th style={tdPops}>Descrição</th><th style={tdPops}>Arquivo</th></tr></thead>
+          <thead><tr><th style={tdPops}>Nº</th><th style={tdPops}>Data</th><th style={tdPops}>Descrição</th></tr></thead>
           <tbody>{hist.length ? hist.map((h, i) => (
             <tr key={i}>
-              <td style={tdPops}>{String(h.rev).padStart(2, "0")}</td>
+              <td style={tdPops}>
+                {h.arquivo?.dataUrl
+                  ? <a href={h.arquivo.dataUrl} download={nomeArquivoRev(h.rev)} title={`Baixar ${nomeArquivoRev(h.rev)}`}>⬇ {String(h.rev).padStart(2, "0")}</a>
+                  : String(h.rev).padStart(2, "0")}
+              </td>
               <td style={tdPops}>{h.data}</td>
               <td style={tdPops}>{h.descricao}</td>
-              <td style={tdPops}>{h.arquivo?.dataUrl ? <a href={h.arquivo.dataUrl} download={nomeArquivoRev(h.rev)} title={nomeArquivoRev(h.rev)}>⬇ Rev {String(h.rev).padStart(2, "0")}</a> : <span style={{ color: CORES.cinza }}>—</span>}</td>
             </tr>
-          )) : <tr><td colSpan={4} style={{ ...tdPops, color: CORES.cinza }}>—</td></tr>}</tbody>
+          )) : <tr><td colSpan={3} style={{ ...tdPops, color: CORES.cinza }}>—</td></tr>}</tbody>
         </table>
         {pop.avaliacao && !pop.avaliacao.aprovado && (
           <p style={{ fontSize: 12.5, color: "#990000", marginTop: 10 }}><b>Última reprovação (avaliador):</b> {pop.avaliacao.obs}</p>
