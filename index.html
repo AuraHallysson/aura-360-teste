@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.16.2";
+const VERSAO_APP = "1.17.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1729,7 +1729,7 @@ async function agruparProcedimentosPorArquivos(arquivos) {
   });
   const grupoArray = [...grupos.values()].map((g) => {
     const semRev = g.itens.filter((it) => it.revPalpite === null);
-    const candidatos = g.itens.map((it) => ({ file: it.file, revPalpite: it.revPalpite, blobUrl: URL.createObjectURL(it.file), fonte: it.fonte, erroLeitura: it.erroLeitura }));
+    const candidatos = g.itens.map((it) => ({ file: it.file, revPalpite: it.revPalpite, blobUrl: URL.createObjectURL(it.file), fonte: it.fonte, erroLeitura: it.erroLeitura, ignorado: false }));
     // Sem revisão identificada (nem cabeçalho, nem histórico, nem nome) = candidato a "atual" por
     // eliminação. Mais de um arquivo assim no mesmo grupo é ambíguo e vira pendência.
     const maiorExplicita = Math.max(-1, ...candidatos.filter((c) => c.revPalpite !== null).map((c) => c.revPalpite));
@@ -1748,11 +1748,13 @@ async function agruparProcedimentosPorArquivos(arquivos) {
   return { grupos: grupoArray, ignorados };
 }
 
-function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciais, aoVoltar }) {
+function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciais, arquivoUnicoInicial, aoVoltar }) {
   const [resultado, setResultado] = useState(null);
   const [importando, setImportando] = useState(false);
   const [resumo, setResumo] = useState(null);
   const [analisando, setAnalisando] = useState(false);
+  const [arquivoUnicoPendente, setArquivoUnicoPendente] = useState(null);
+  const [areaEscolhidaUnico, setAreaEscolhidaUnico] = useState("");
 
   useEffect(() => () => {
     // Libera os blob: URLs criados pra pré-visualização quando a tela é desmontada/reanalisada.
@@ -1765,10 +1767,21 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
   // chega aqui com os arquivos prontos, direto na pré-visualização, sem precisar clicar de novo.
   useEffect(() => {
     if (arquivosIniciais && arquivosIniciais.length) analisarArquivos(arquivosIniciais);
+    else if (arquivoUnicoInicial) setArquivoUnicoPendente(arquivoUnicoInicial);
     // eslint-disable-next-line
   }, []);
 
-  const analisarArquivos = async (files) => {
+  // Confirmação da Área de um arquivo único (fora do fluxo de pasta) — depois disso, o resto da
+  // análise (identificação de código/título/revisão, checagem de duplicidade) é o MESMO pipeline
+  // usado para pasta, só que com uma única "pasta" forçada (a Área escolhida pelo usuário).
+  const confirmarAreaArquivoUnico = () => {
+    if (!areaEscolhidaUnico) { avisar("Escolha a Área a que este procedimento pertence."); return; }
+    const arquivo = arquivoUnicoPendente;
+    setArquivoUnicoPendente(null);
+    analisarArquivos([arquivo], areaEscolhidaUnico);
+  };
+
+  const analisarArquivos = async (files, areaForcadaPastaNorm) => {
     if (files.length === 0) return;
     setAnalisando(true);
     try {
@@ -1778,17 +1791,24 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     // descartado da análise sem nem entrar na estrutura, independente de onde estiver.
     const arquivosValidos = files.filter((f) => !/\.zip$/i.test(f.name));
     const porPasta = new Map();
-    arquivosValidos.forEach((f) => {
-      const partes = (f.webkitRelativePath || f.name).split("/");
-      // Precisa de pelo menos Origem/Área/arquivo (3 segmentos). Um arquivo direto na raiz da
-      // pasta escolhida (Origem/arquivo.ext, 2 segmentos) NÃO é uma Área — é só um arquivo solto,
-      // e ficava sendo tratado (por bug) como se o próprio nome do arquivo fosse uma pasta.
-      if (partes.length < 3) return;
-      origemNome = origemNome || partes[0];
-      const pasta = partes[1];
-      if (!porPasta.has(pasta)) porPasta.set(pasta, []);
-      porPasta.get(pasta).push(f);
-    });
+    if (areaForcadaPastaNorm) {
+      // Arquivo único: a "pasta" é a própria Área escolhida pelo usuário — não existe estrutura
+      // de pastas nenhuma pra derivar (não passa pelo split de webkitRelativePath abaixo).
+      origemNome = "Arquivo único";
+      porPasta.set(areaForcadaPastaNorm, arquivosValidos);
+    } else {
+      arquivosValidos.forEach((f) => {
+        const partes = (f.webkitRelativePath || f.name).split("/");
+        // Precisa de pelo menos Origem/Área/arquivo (3 segmentos). Um arquivo direto na raiz da
+        // pasta escolhida (Origem/arquivo.ext, 2 segmentos) NÃO é uma Área — é só um arquivo solto,
+        // e ficava sendo tratado (por bug) como se o próprio nome do arquivo fosse uma pasta.
+        if (partes.length < 3) return;
+        origemNome = origemNome || partes[0];
+        const pasta = partes[1];
+        if (!porPasta.has(pasta)) porPasta.set(pasta, []);
+        porPasta.get(pasta).push(f);
+      });
+    }
     let pastaListaProcedimentos = null, pastaModeloPop = null;
     const entradasArea = [...porPasta.entries()].filter(([pastaOriginal, arquivosPasta]) => {
       if (ehPastaBackup(pastaOriginal)) return false; // nunca importar pasta de backup — nem como Área, nem como pasta especial
@@ -1828,10 +1848,27 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     // Ordena por índice pra exibição — Áreas primeiro, Modelo - POP e Lista de Procedimentos por
     // último (na posição certa, por construção); pendências sem índice ficam ao final.
     const areas = [...areasCandidatas, ...areasEspeciais].sort((a, b) => (a.indice ?? Infinity) - (b.indice ?? Infinity));
+    // Checa duplicidade contra o acervo JÁ EXISTENTE (dados.pops), não só dentro deste lote: se o
+    // código já existe numa Área DIFERENTE, não decide sozinho — mostra as duas opções na
+    // pré-visualização (mover o existente pra Área correta, ou excluí-lo) e só resolve na
+    // confirmação. Mesmo código na MESMA Área continua sendo tratado como conflito simples (nunca
+    // sobrescreve o procedimento oficial).
+    areas.forEach((area) => {
+      if (area.ehListaProcedimentos || area.ehModeloPop) return;
+      area.grupos.forEach((grupo) => {
+        if (!grupo.codigo) return;
+        const existente = (dados.pops || []).find((p) => p.codigo.toLowerCase() === grupo.codigo.toLowerCase());
+        if (!existente) return;
+        if (existente.area === area.pastaNorm) { grupo.jaExisteMesmaArea = true; return; }
+        grupo.conflitoAreaExistente = existente.area;
+        grupo.conflitoPopId = existente.id;
+        grupo.resolucaoConflito = null; // "mover" | "excluir", escolhido na pré-visualização
+      });
+    });
     const totalArquivos = arquivosValidos.length;
     const totalProcedimentos = areas.reduce((s, a) => s + a.grupos.length, 0);
     const totalArquivosDocx = areas.reduce((s, a) => s + a.grupos.reduce((s2, g) => s2 + g.candidatos.length, 0), 0);
-    const totalPendencias = areas.reduce((s, a) => s + (a.pendente ? 1 : 0) + a.grupos.filter((g) => g.pendente).length, 0);
+    const totalPendencias = areas.reduce((s, a) => s + (a.pendente ? 1 : 0) + a.grupos.filter((g) => g.pendente || (g.conflitoAreaExistente && !g.resolucaoConflito)).length, 0);
     setResultado({ origemNome, areas, totalArquivos, totalProcedimentos, totalArquivosDocx, totalPendencias });
     setResumo(null);
     } finally {
@@ -1852,6 +1889,31 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
       areas: r.areas.map((a, i) => i !== ai ? a : {
         ...a,
         grupos: a.grupos.map((g, j) => j !== gi ? g : { ...g, candidatos: g.candidatos.map((c, k) => k !== ci ? c : { ...c, revPalpite: parseInt(valor, 10) || 0 }) }),
+      }),
+    }));
+  };
+
+  // Marca/desmarca "Ignorar" num arquivo candidato — o sistema simplesmente não importa esse
+  // arquivo (não entra no acervo), mas ele continua preservado no backup da origem.
+  const alternarIgnorarArquivo = (ai, gi, ci) => {
+    setResultado((r) => ({
+      ...r,
+      areas: r.areas.map((a, i) => i !== ai ? a : {
+        ...a,
+        grupos: a.grupos.map((g, j) => j !== gi ? g : { ...g, candidatos: g.candidatos.map((c, k) => k !== ci ? c : { ...c, ignorado: !c.ignorado }) }),
+      }),
+    }));
+  };
+
+  // Resolve um conflito de código já existente em outra Área do acervo: "mover" realoca o
+  // procedimento existente pra Área identificada nesta importação; "excluir" remove o existente
+  // pra dar lugar ao importado. Sem escolha, o grupo fica pendente e nada é importado/alterado.
+  const resolverConflitoArea = (ai, gi, resolucao) => {
+    setResultado((r) => ({
+      ...r,
+      areas: r.areas.map((a, i) => i !== ai ? a : {
+        ...a,
+        grupos: a.grupos.map((g, j) => j !== gi ? g : { ...g, resolucaoConflito: resolucao }),
       }),
     }));
   };
@@ -1890,8 +1952,22 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
         for (const grupo of area.grupos) {
           if (grupo.pendente) pendencias++;
           if (!grupo.codigo) { pendencias++; continue; } // sem código identificável: preserva no backup, não cria pop sozinho
-          if (popsAtual.some((p) => p.codigo.toLowerCase() === grupo.codigo.toLowerCase())) { conflitos++; continue; } // nunca sobrescreve procedimento oficial existente
-          const ordenados = [...grupo.candidatos].sort((a, b) => a.revPalpite - b.revPalpite);
+          const candidatosValidos = grupo.candidatos.filter((c) => !c.ignorado);
+          if (candidatosValidos.length === 0) continue; // usuário marcou "Ignorar" em todos os arquivos deste procedimento — não importa nada, mas nada disso é erro
+          if (grupo.conflitoAreaExistente) {
+            if (grupo.resolucaoConflito === "mover") {
+              popsAtual = popsAtual.map((p) => p.id === grupo.conflitoPopId ? { ...p, area: area.pastaNorm } : p);
+              continue; // só realoca o procedimento já existente — não cria uma segunda entrada
+            }
+            if (grupo.resolucaoConflito === "excluir") {
+              popsAtual = popsAtual.filter((p) => p.id !== grupo.conflitoPopId); // segue o fluxo normal abaixo e cria a entrada nesta Área
+            } else {
+              pendencias++; continue; // conflito não resolvido pelo usuário: não importa, preserva o existente como está
+            }
+          } else if (grupo.jaExisteMesmaArea || popsAtual.some((p) => p.codigo.toLowerCase() === grupo.codigo.toLowerCase())) {
+            conflitos++; continue; // mesmo código já existe nesta Área: nunca sobrescreve procedimento oficial existente
+          }
+          const ordenados = [...candidatosValidos].sort((a, b) => a.revPalpite - b.revPalpite);
           const revisaoAtualNum = Math.max(...ordenados.map((c) => c.revPalpite));
           const historico = [];
           for (const cand of ordenados) {
@@ -1930,6 +2006,8 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     }
   };
 
+  const estiloLinkAcao = { border: "none", background: "none", color: CORES.laranja, textDecoration: "underline", cursor: "pointer", fontSize: 11.5, padding: 0, fontFamily: "inherit" };
+
   return (
     <div>
       <button onClick={aoVoltar} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: 12, padding: 0, fontFamily: "inherit" }}>← Voltar a Dados</button>
@@ -1952,7 +2030,25 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
         </Cartao>
       )}
 
-      {!resultado && !analisando && (
+      {arquivoUnicoPendente && !analisando && (
+        <Cartao style={{ marginBottom: 16, maxWidth: 460 }}>
+          <p style={{ fontSize: 13, color: CORES.azul, margin: "0 0 10px" }}>Arquivo selecionado: <b>{arquivoUnicoPendente.name}</b></p>
+          <Campo label="A qual Área este procedimento pertence?">
+            <select style={inputStyle} value={areaEscolhidaUnico} onChange={(e) => setAreaEscolhidaUnico(e.target.value)}>
+              <option value="">Selecione…</option>
+              {[...(dados.popsAreas || [])].sort((a, b) => (a.numero ?? 0) - (b.numero ?? 0)).map((a) => (
+                <option key={a.id} value={a.pastaNorm}>{a.pastaNorm}</option>
+              ))}
+            </select>
+          </Campo>
+          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            <Botao onClick={confirmarAreaArquivoUnico}>Analisar</Botao>
+            <Botao tipo="contorno" onClick={() => setArquivoUnicoPendente(null)}>Cancelar</Botao>
+          </div>
+        </Cartao>
+      )}
+
+      {!resultado && !analisando && !arquivoUnicoPendente && (
         <label style={{ display: "inline-block", cursor: "pointer" }}>
           <Botao tipo="laranja" style={{ pointerEvents: "none" }}>📂 Selecionar pasta de origem</Botao>
           <input type="file" webkitdirectory="" directory="" multiple onChange={analisar} style={{ display: "none" }} />
@@ -1986,14 +2082,29 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
                 <p style={{ fontSize: 12.5, color: CORES.cinza, margin: 0 }}>Nenhum arquivo .docx reconhecido nesta pasta.</p>
               ) : (
                 <table style={{ borderCollapse: "collapse", width: "100%" }}>
-                  <thead><tr><th style={tdPops}>Procedimento</th><th style={tdPops}>Arquivo</th><th style={tdPops}>Rev.</th><th style={tdPops}></th></tr></thead>
+                  <thead><tr><th style={tdPops}>Procedimento</th><th style={tdPops}>Arquivo</th><th style={tdPops}>Rev.</th><th style={tdPops}>Ignorar</th><th style={tdPops}></th></tr></thead>
                   <tbody>
                     {area.grupos.map((grupo, gi) => grupo.candidatos.map((cand, ci) => (
-                      <tr key={ci}>
+                      <tr key={ci} style={{ opacity: cand.ignorado ? 0.5 : 1 }}>
                         {ci === 0 && <td style={tdPops} rowSpan={grupo.candidatos.length}>
                           <b>{grupo.codigo || "(código não identificado)"}</b><br />
                           <span style={{ fontSize: 11.5, color: CORES.cinza }}>{grupo.tituloGuess}</span>
                           {grupo.pendente && <div style={{ fontSize: 11.5, color: CORES.laranja, marginTop: 4 }}>⚠ {grupo.motivo}</div>}
+                          {grupo.conflitoAreaExistente && (
+                            <div style={{ fontSize: 11.5, color: CORES.laranja, marginTop: 4 }}>
+                              ⚠ Já existe um procedimento com este código na Área "{grupo.conflitoAreaExistente}".
+                              {grupo.resolucaoConflito ? (
+                                <div style={{ color: "#0f6b3f", marginTop: 2 }}>
+                                  {grupo.resolucaoConflito === "mover" ? "Será movido para esta Área." : "O existente será excluído e este será importado."}
+                                </div>
+                              ) : (
+                                <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                                  <button type="button" onClick={() => resolverConflitoArea(ai, gi, "mover")} style={estiloLinkAcao}>Mover para esta Área</button>
+                                  <button type="button" onClick={() => resolverConflitoArea(ai, gi, "excluir")} style={estiloLinkAcao}>Excluir o existente</button>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </td>}
                         <td style={tdPops}>
                           {cand.file.name}
@@ -2001,7 +2112,8 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
                             revisão via {cand.fonte}{cand.erroLeitura ? ` (${cand.erroLeitura})` : ""}
                           </div>
                         </td>
-                        <td style={tdPops}><input type="number" min={0} value={cand.revPalpite} onChange={(e) => atualizarRevisao(ai, gi, ci, e.target.value)} style={{ ...inputStyle, width: 60, padding: "4px 6px" }} /></td>
+                        <td style={tdPops}><input type="number" min={0} value={cand.revPalpite} disabled={cand.ignorado} onChange={(e) => atualizarRevisao(ai, gi, ci, e.target.value)} style={{ ...inputStyle, width: 60, padding: "4px 6px" }} /></td>
+                        <td style={tdPops}><input type="checkbox" checked={!!cand.ignorado} onChange={() => alternarIgnorarArquivo(ai, gi, ci)} title="Não importar este arquivo" /></td>
                         <td style={tdPops}><a href={cand.blobUrl} target="_blank" rel="noreferrer">abrir</a></td>
                       </tr>
                     )))}
@@ -2077,7 +2189,9 @@ function TelaExportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
 function TelaDadosProcedimentos({ dados, setDados, usuario }) {
   const [tela, setTela] = useState("menu"); // "menu" | "importar" | "exportar"
   const [arquivosImportacao, setArquivosImportacao] = useState(null);
+  const [arquivoUnicoImportacao, setArquivoUnicoImportacao] = useState(null);
   const inputImportacaoRef = useRef(null);
+  const inputArquivoUnicoRef = useRef(null);
 
   const aoSelecionarPastaImportacao = (e) => {
     const files = Array.from(e.target.files || []);
@@ -2087,16 +2201,33 @@ function TelaDadosProcedimentos({ dados, setDados, usuario }) {
     setTela("importar");
   };
 
-  if (tela === "importar") return <TelaImportacaoProcedimentos dados={dados} setDados={setDados} usuario={usuario} arquivosIniciais={arquivosImportacao} aoVoltar={() => { setTela("menu"); setArquivosImportacao(null); }} />;
+  // Importação de UM único arquivo (fora de uma pasta): só aceita .docx — qualquer outro formato
+  // é rejeitado aqui mesmo, antes de entrar na tela de importação (regra: só pasta ou .docx).
+  const aoSelecionarArquivoUnicoImportacao = (e) => {
+    const file = (e.target.files || [])[0] || null;
+    e.target.value = "";
+    if (!file) return; // usuário cancelou o seletor — fica no menu
+    if (!/\.docx$/i.test(file.name)) { avisar('Só é possível importar um arquivo ".docx" — para outros formatos, use "Selecionar pasta de origem".'); return; }
+    setArquivoUnicoImportacao(file);
+    setTela("importar");
+  };
+
+  if (tela === "importar") return <TelaImportacaoProcedimentos dados={dados} setDados={setDados} usuario={usuario} arquivosIniciais={arquivosImportacao} arquivoUnicoInicial={arquivoUnicoImportacao} aoVoltar={() => { setTela("menu"); setArquivosImportacao(null); setArquivoUnicoImportacao(null); }} />;
   if (tela === "exportar") return <TelaExportacaoProcedimentos dados={dados} setDados={setDados} usuario={usuario} aoVoltar={() => setTela("menu")} />;
   const opcao = { background: "#fff", border: `1px solid ${CORES.cinza}`, borderRadius: 10, padding: 28, textAlign: "center", cursor: "pointer" };
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
       <input ref={inputImportacaoRef} type="file" webkitdirectory="" directory="" multiple onChange={aoSelecionarPastaImportacao} style={{ display: "none" }} />
+      <input ref={inputArquivoUnicoRef} type="file" accept=".docx" onChange={aoSelecionarArquivoUnicoImportacao} style={{ display: "none" }} />
       <div style={opcao} onClick={() => inputImportacaoRef.current.click()}>
         <div style={{ fontSize: 36 }}>📥</div>
         <h3 style={{ color: CORES.azul, margin: "8px 0 4px" }}>Importação de Procedimentos</h3>
         <p style={{ color: CORES.cinza, fontSize: 12.5, margin: 0 }}>Importa e organiza uma pasta existente de procedimentos.</p>
+      </div>
+      <div style={opcao} onClick={() => inputArquivoUnicoRef.current.click()}>
+        <div style={{ fontSize: 36 }}>📄</div>
+        <h3 style={{ color: CORES.azul, margin: "8px 0 4px" }}>Importar Arquivo Único</h3>
+        <p style={{ color: CORES.cinza, fontSize: 12.5, margin: 0 }}>Importa um único arquivo .docx para uma Área já existente.</p>
       </div>
       <div style={opcao} onClick={() => setTela("exportar")}>
         <div style={{ fontSize: 36 }}>📤</div>
