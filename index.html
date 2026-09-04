@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.17.0";
+const VERSAO_APP = "1.17.1";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1922,19 +1922,35 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     if (!resultado) return;
     setImportando(true);
     try {
+      // Lê cada arquivo individualmente (em vez de entregar o File direto pro JSZip) porque um
+      // único arquivo inacessível — típico de placeholder do OneDrive "Arquivos sob Demanda" que
+      // não foi baixado localmente — faz o generateAsync() falhar por completo ("A requested file
+      // or directory could not be found..."), derrubando TODA a importação sem gravar nada. Aqui,
+      // um arquivo que falhar só fica de fora do backup (registrado pro usuário); os demais seguem.
       const zipBackup = new window.JSZip();
-      resultado.areas.forEach((a) => {
+      const arquivosSemLeituraBackup = [];
+      for (const a of resultado.areas) {
         const arquivosDaArea = (a.ehListaProcedimentos || a.ehModeloPop)
           ? (a.arquivosBrutos || [])
           : [...a.grupos.flatMap((g) => g.candidatos.map((c) => c.file)), ...(a.ignorados || [])];
-        arquivosDaArea.forEach((f) => zipBackup.file(f.webkitRelativePath || f.name, f));
-      });
+        for (const f of arquivosDaArea) {
+          try {
+            const buf = await f.arrayBuffer();
+            zipBackup.file(f.webkitRelativePath || f.name, buf);
+          } catch (e) {
+            arquivosSemLeituraBackup.push(f.webkitRelativePath || f.name);
+          }
+        }
+      }
       const blobBackup = await zipBackup.generateAsync({ type: "blob" });
       const nomeBackup = `Backup_${timestampArquivo()}.zip`;
       baixarBlob(blobBackup, nomeBackup);
       if (AUTENTICACAO_REAL) {
         try { await enviarBackupSharePoint(blobBackup, nomeBackup); }
         catch (e) { avisar("Backup baixado localmente, mas o envio ao SharePoint falhou: " + e.message); }
+      }
+      if (arquivosSemLeituraBackup.length > 0) {
+        avisar(`${arquivosSemLeituraBackup.length} arquivo(s) não puderam ser lidos e ficaram fora do backup (provavelmente ainda em nuvem — OneDrive "Arquivos sob Demanda" — e não baixados localmente): ${arquivosSemLeituraBackup.join(", ")}`);
       }
 
       let popsAreasAtual = dados.popsAreas || [];
@@ -1970,19 +1986,37 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
           const ordenados = [...candidatosValidos].sort((a, b) => a.revPalpite - b.revPalpite);
           const revisaoAtualNum = Math.max(...ordenados.map((c) => c.revPalpite));
           const historico = [];
+          let falhaLeituraNesteGrupo = false;
           for (const cand of ordenados) {
-            const arquivoSalvo = await salvarArquivoProcedimento(cand.file, area.pastaNorm);
             const iso = new Date(cand.file.lastModified).toISOString().slice(0, 10);
-            historico.push({ rev: cand.revPalpite, data: formatarDataBR(iso), dataIso: iso, descricao: cand.revPalpite === 0 ? "Inicial (importado)" : `Importado da origem — revisão identificada pelo ${cand.fonte || "nome do arquivo"}`, arquivo: arquivoSalvo });
-            arquivosPadronizados++;
+            // Mesmo motivo do backup: um arquivo inacessível (placeholder do OneDrive) não pode
+            // abortar a importação inteira — só essa revisão fica sem arquivo salvo, marcada como
+            // pendência, e o restante do lote continua normalmente.
+            let arquivoSalvo = null;
+            try {
+              arquivoSalvo = await salvarArquivoProcedimento(cand.file, area.pastaNorm);
+              arquivosPadronizados++;
+            } catch (e) {
+              falhaLeituraNesteGrupo = true;
+            }
+            historico.push({
+              rev: cand.revPalpite, data: formatarDataBR(iso), dataIso: iso,
+              descricao: arquivoSalvo
+                ? (cand.revPalpite === 0 ? "Inicial (importado)" : `Importado da origem — revisão identificada pelo ${cand.fonte || "nome do arquivo"}`)
+                : `Não foi possível ler "${cand.file.name}" no momento da importação (provavelmente ainda em nuvem, não baixado localmente) — revisão registrada sem o arquivo`,
+              arquivo: arquivoSalvo,
+            });
           }
           const ultima = historico.find((h) => h.rev === revisaoAtualNum);
+          const pendenteFinal = grupo.pendente || falhaLeituraNesteGrupo;
+          if (falhaLeituraNesteGrupo && !grupo.pendente) pendencias++;
           popsAtual = [...popsAtual, {
             id: proximoId++, codigo: grupo.codigo, titulo: grupo.tituloGuess || grupo.codigo, area: area.pastaNorm, status: "PUBLICADO",
             revisaoAtual: revisaoAtualNum, dataRevisao: ultima?.data || "", dataRevisaoIso: ultima?.dataIso || null,
             validade: ultima?.dataIso ? popsAddDias(ultima.dataIso, dados.popsConfig?.validadeDias || 365) : null,
             singularUpload: false, criadoEm: new Date().toISOString(), historico,
-            origemImportacaoId: importId, pendente: grupo.pendente, motivoPendencia: grupo.motivo || null,
+            origemImportacaoId: importId, pendente: pendenteFinal,
+            motivoPendencia: falhaLeituraNesteGrupo ? [grupo.motivo, "Um ou mais arquivos não puderam ser lidos no momento da importação."].filter(Boolean).join(" ") : (grupo.motivo || null),
           }];
           procedimentosCriados++;
         }
