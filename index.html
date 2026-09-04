@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.17.1";
+const VERSAO_APP = "1.18.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1056,10 +1056,101 @@ async function salvarArquivoProcedimento(file, caminho) {
   });
 }
 
+// --- Download de qualquer revisão de qualquer POP, sempre disponível --------------------------
+// Regra: toda versão de todo procedimento pode ser baixada. Quando existe o arquivo real
+// (enviado por upload/importação), ele é usado; quando não existe (ex.: POPs de exemplo cujo
+// documento original nunca foi carregado no sistema), um .docx simples é gerado na hora só com os
+// dados já cadastrados (código/título/área/revisão/descrição) — deixando claro, dentro do próprio
+// texto, que é um documento gerado, não o original. Toda cópia que NÃO é a revisão atual leva uma
+// marca d'água de aviso; a revisão atual nunca leva marca d'água (regra explícita do usuário).
+const DOCX_MARCA_DAGUA_TEXTO = "CÓPIA NÃO CONTROLADA — REVISÃO ANTERIOR, NÃO É O DOCUMENTO OFICIAL VIGENTE";
+const DOCX_CONTENT_TYPES_MIN = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`;
+const DOCX_RELS_MIN = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`;
+
+function paragrafoDocx(texto, { negrito, cor, tamanho, centralizado } = {}) {
+  const escapado = String(texto ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const rPr = `${negrito ? "<w:b/>" : ""}${cor ? `<w:color w:val="${cor}"/>` : ""}${tamanho ? `<w:sz w:val="${tamanho}"/><w:szCs w:val="${tamanho}"/>` : ""}`;
+  const pPr = centralizado ? "<w:pPr><w:jc w:val=\"center\"/></w:pPr>" : "";
+  return `<w:p>${pPr}<w:r><w:rPr>${rPr}</w:rPr><w:t xml:space="preserve">${escapado}</w:t></w:r></w:p>`;
+}
+
+// Gera um .docx mínimo (válido, abre no Word) com os dados já cadastrados do procedimento — usado
+// só quando não existe nenhum arquivo real associado a essa revisão.
+async function gerarDocxSintetico(pop, h) {
+  const paragrafos = [
+    paragrafoDocx(pop.codigo, { negrito: true, tamanho: 28 }),
+    paragrafoDocx(pop.titulo || "", { tamanho: 24 }),
+    paragrafoDocx(pop.area || "", {}),
+    paragrafoDocx(`Revisão ${String(h.rev).padStart(2, "0")} — ${h.data || ""}`, {}),
+    paragrafoDocx(h.descricao || "", {}),
+    paragrafoDocx("", {}),
+    paragrafoDocx("Documento gerado automaticamente pelo AURA 360° Planta — não é o arquivo original (nenhum documento foi carregado no sistema para esta revisão).", { cor: "808080" }),
+  ].join("");
+  const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${paragrafos}<w:sectPr/></w:body></w:document>`;
+  const zip = new window.JSZip();
+  zip.file("[Content_Types].xml", DOCX_CONTENT_TYPES_MIN);
+  zip.file("_rels/.rels", DOCX_RELS_MIN);
+  zip.file("word/document.xml", xml);
+  return await zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+}
+
+// Converte o arquivo real já salvo (dataUrl base64 ou url do SharePoint) num Blob. null se não
+// existir nenhum dos dois (revisão sem arquivo real).
+async function obterBlobArquivoPop(arquivo) {
+  if (!arquivo) return null;
+  const origem = arquivo.dataUrl || arquivo.url;
+  if (!origem) return null;
+  const resp = await fetch(origem);
+  return await resp.blob();
+}
+
+// Insere um parágrafo de aviso no topo do corpo do documento. Nunca deixa a marca d'água impedir
+// o download: qualquer falha ao processar o .docx devolve o arquivo original, sem marca.
+async function aplicarMarcaDaguaDocx(blob, texto) {
+  try {
+    const zip = await window.JSZip.loadAsync(blob);
+    const doc = zip.file("word/document.xml");
+    if (!doc) return blob;
+    let xml = await doc.async("string");
+    if (!/<w:body>/i.test(xml)) return blob;
+    const marca = paragrafoDocx(texto, { negrito: true, cor: "C00000", tamanho: 24, centralizado: true });
+    xml = xml.replace(/<w:body>/i, `<w:body>${marca}`);
+    zip.file("word/document.xml", xml);
+    return await zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+  } catch (e) {
+    return blob;
+  }
+}
+
+// Ponto único usado por toda a UI para baixar uma revisão de um POP: sempre retorna algo pra
+// baixar (real ou sintético) e aplica a marca d'água em toda revisão que NÃO for a atual.
+async function obterArquivoParaDownload(pop, h) {
+  const ehAtual = h.rev === (pop.revisaoAtual ?? 0);
+  let blob = await obterBlobArquivoPop(h.arquivo);
+  if (!blob) blob = await gerarDocxSintetico(pop, h);
+  if (!ehAtual) blob = await aplicarMarcaDaguaDocx(blob, DOCX_MARCA_DAGUA_TEXTO);
+  return { blob, nome: nomeArquivoRevPop(pop, h.rev) };
+}
+
 function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) {
   const [modoObs, setModoObs] = useState(null); // null | "reprovar" | "confirmar"
   const [textoObs, setTextoObs] = useState("");
   const [avaliadorEsc, setAvaliadorEsc] = useState("");
+  const [baixandoRev, setBaixandoRev] = useState(null); // número da revisão sendo gerada/baixada, ou null
+
+  // Baixa qualquer revisão do histórico (real ou gerada na hora) — sempre disponível, com marca
+  // d'água em toda revisão que não for a atual (obterArquivoParaDownload decide isso).
+  const baixarRevisao = async (h) => {
+    setBaixandoRev(h.rev);
+    try {
+      const { blob, nome } = await obterArquivoParaDownload(pop, h);
+      baixarBlob(blob, nome);
+    } catch (e) {
+      avisar("Não foi possível gerar o arquivo para download: " + (e.message || String(e)));
+    } finally {
+      setBaixandoRev(null);
+    }
+  };
 
   const meAuditor = capacidadePops(usuario, PAPEL_POPS_PROCEDIMENTOS, dados) === "editar";
   const meSSMA = capacidadePops(usuario, PAPEL_POPS_SSMA, dados) === "editar";
@@ -1131,11 +1222,10 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
 
   const hist = pop.historico || [];
   const nomeArquivoRev = (rev) => nomeArquivoRevPop(pop, rev);
-  // Procedimento "atual" para baixar ao iniciar uma revisão = arquivo da revisão concluída mais
-  // recente no histórico. Só existe a partir da 1ª revisão feita com upload por aqui — POPs
-  // importados sem arquivo original não têm o que baixar (fica indicado na tela).
-  const ultimoComArquivo = [...hist].reverse().find((h) => h.arquivo?.url || h.arquivo?.dataUrl);
-  const arquivoAtual = ultimoComArquivo ? { ...ultimoComArquivo.arquivo, nome: nomeArquivoRev(ultimoComArquivo.rev) } : null;
+  // Procedimento "atual" para baixar ao iniciar uma revisão = a revisão concluída mais recente no
+  // histórico (pop.revisaoAtual). Toda revisão agora pode ser baixada — real quando existe o
+  // arquivo enviado, gerada na hora quando não existe (ex.: POPs de exemplo) — nunca fica sem nada.
+  const historicoAtual = hist.find((h) => h.rev === (pop.revisaoAtual ?? 0)) || hist[hist.length - 1] || null;
   const revEmAndamento = pop.revisaoEmAndamento || (pop.revisaoAtual || 0) + 1;
 
   return (
@@ -1154,10 +1244,11 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
         {pop.status === "EM_REVISAO" && meAuditor && (
           <div style={{ background: CORES.cinzaClaro, borderRadius: 8, padding: 14, marginTop: 8 }}>
             <div style={{ marginBottom: 10, fontSize: 13 }}>
-              {arquivoAtual ? (
-                <a {...hrefArquivoPop(arquivoAtual)} target={arquivoAtual.url ? "_blank" : undefined} rel={arquivoAtual.url ? "noreferrer" : undefined} style={{ color: CORES.azul, fontWeight: 700 }}>⬇ Baixar procedimento atual ({arquivoAtual.nome})</a>
-              ) : (
-                <span style={{ color: CORES.cinza, fontStyle: "italic" }}>Nenhum arquivo do procedimento atual disponível neste sistema (documento original não foi carregado aqui) — consulte o Singular.</span>
+              {historicoAtual && (
+                <button type="button" disabled={baixandoRev === historicoAtual.rev} onClick={() => baixarRevisao(historicoAtual)}
+                  style={{ border: "none", background: "none", color: CORES.azul, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit", fontSize: 13 }}>
+                  {baixandoRev === historicoAtual.rev ? "Gerando…" : `⬇ Baixar procedimento atual (${nomeArquivoRev(historicoAtual.rev)})`}
+                </button>
               )}
             </div>
             {!pop.trabalhoAnexo || !pop.trabalhoEnviado ? (
@@ -1226,17 +1317,21 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
         <h4 style={{ margin: "18px 0 6px", fontSize: 14, color: CORES.azul }}>Histórico de Revisões</h4>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <thead><tr><th style={tdPops}>Nº</th><th style={tdPops}>Data</th><th style={tdPops}>Descrição</th></tr></thead>
-          <tbody>{hist.length ? hist.map((h, i) => (
+          <tbody>{hist.length ? hist.map((h, i) => {
+            const ehAtual = h.rev === (pop.revisaoAtual ?? 0);
+            return (
             <tr key={i}>
               <td style={tdPops}>
-                {(h.arquivo?.url || h.arquivo?.dataUrl)
-                  ? <a {...hrefArquivoPop({ ...h.arquivo, nome: nomeArquivoRev(h.rev) })} target={h.arquivo.url ? "_blank" : undefined} rel={h.arquivo.url ? "noreferrer" : undefined} title={`Baixar ${nomeArquivoRev(h.rev)}`}>⬇ {String(h.rev).padStart(2, "0")}</a>
-                  : String(h.rev).padStart(2, "0")}
+                <button type="button" disabled={baixandoRev === h.rev} onClick={() => baixarRevisao(h)}
+                  title={ehAtual ? `Baixar ${nomeArquivoRev(h.rev)}` : `Baixar ${nomeArquivoRev(h.rev)} (cópia não controlada, com marca d'água)`}
+                  style={{ border: "none", background: "none", color: CORES.azul, cursor: "pointer", padding: 0, fontFamily: "inherit", fontSize: "inherit" }}>
+                  {baixandoRev === h.rev ? "…" : `⬇ ${String(h.rev).padStart(2, "0")}`}
+                </button>
               </td>
               <td style={tdPops}>{h.data}</td>
               <td style={tdPops}>{h.descricao}</td>
             </tr>
-          )) : <tr><td colSpan={3} style={{ ...tdPops, color: CORES.cinza }}>—</td></tr>}</tbody>
+          );}) : <tr><td colSpan={3} style={{ ...tdPops, color: CORES.cinza }}>—</td></tr>}</tbody>
         </table>
         {pop.avaliacao && !pop.avaliacao.aprovado && (
           <p style={{ fontSize: 12.5, color: "#990000", marginTop: 10 }}><b>Última reprovação (avaliador):</b> {pop.avaliacao.obs}</p>
@@ -1422,7 +1517,7 @@ function TelaSSMAPops({ dados, setDados, usuario }) {
     await atualizarPop(p.id, {
       // O arquivo enviado pelo auditor nesta revisão fica preso à própria linha do histórico —
       // é o que permite baixar cada versão anterior depois, e também é a fonte do "procedimento
-      // atual" oferecido para download na próxima revisão (ver arquivoAtual no modal de detalhe).
+      // atual" oferecido para download na próxima revisão (ver historicoAtual no modal de detalhe).
       historico: [...(p.historico || []), { rev: novaRev, data: dataBR, descricao: p.descricaoPendente || "", arquivo: p.trabalhoAnexo || null }],
       revisaoAtual: novaRev, dataRevisao: dataBR, dataRevisaoIso: popsHojeIso(), validade: popsAddDias(popsHojeIso(), dados.popsConfig?.validadeDias || 365),
       status: "CONCLUIDO", bloqueadoEdicao: false, revisaoEmAndamento: null, descricaoPendente: null, trabalhoEnviado: false, trabalhoAnexo: null,
@@ -2178,15 +2273,13 @@ function TelaExportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
       for (const p of pops) {
         const pastaArea = areas.find((a) => a.pastaNorm === p.area)?.pastaNorm || p.area || "Sem área";
         for (const h of (p.historico || [])) {
-          if (!h.arquivo) continue;
-          const nomeArq = nomeArquivoRevPop(p, h.rev);
+          // Toda revisão de todo procedimento sai no export — real quando existe o arquivo
+          // enviado, gerada na hora quando não existe — com a mesma marca d'água aplicada em toda
+          // revisão que não for a atual (mesma regra usada no download individual do POP).
           try {
-            if (h.arquivo.dataUrl) {
-              zip.file(`${pastaArea}/${nomeArq}`, h.arquivo.dataUrl.split(",")[1] || "", { base64: true });
-            } else if (h.arquivo.url) {
-              const buf = await fetch(h.arquivo.url).then((r) => r.arrayBuffer());
-              zip.file(`${pastaArea}/${nomeArq}`, buf);
-            }
+            const { blob, nome: nomeArq } = await obterArquivoParaDownload(p, h);
+            const buf = await blob.arrayBuffer();
+            zip.file(`${pastaArea}/${nomeArq}`, buf);
           } catch (e) { /* um arquivo falhando não interrompe a exportação dos demais */ }
         }
       }
