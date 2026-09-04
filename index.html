@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.16.0";
+const VERSAO_APP = "1.16.1";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1707,6 +1707,10 @@ async function identificarProcedimentoDoArquivo(file) {
 // aqui é definitivo — tudo fica editável na pré-visualização antes de confirmar a importação.
 async function agruparProcedimentosPorArquivos(arquivos) {
   const docx = arquivos.filter((f) => /\.docx$/i.test(f.name)); // fase 1: só .docx
+  // Arquivo que não é .docx não é perdido silenciosamente — fica de fora dos procedimentos, mas
+  // continua listado na tela e entra no backup (a origem inteira precisa estar no backup, não só
+  // o que foi reconhecido como procedimento).
+  const ignorados = arquivos.filter((f) => !/\.docx$/i.test(f.name));
   const itens = await Promise.all(docx.map(async (f) => ({ file: f, ...(await identificarProcedimentoDoArquivo(f)) })));
   const grupos = new Map();
   itens.forEach((it) => {
@@ -1716,7 +1720,7 @@ async function agruparProcedimentosPorArquivos(arquivos) {
     g.itens.push(it);
     if (it.titulo) g.titulos.push(it.titulo);
   });
-  return [...grupos.values()].map((g) => {
+  const grupoArray = [...grupos.values()].map((g) => {
     const semRev = g.itens.filter((it) => it.revPalpite === null);
     const candidatos = g.itens.map((it) => ({ file: it.file, revPalpite: it.revPalpite, blobUrl: URL.createObjectURL(it.file), fonte: it.fonte, erroLeitura: it.erroLeitura }));
     // Sem revisão identificada (nem cabeçalho, nem histórico, nem nome) = candidato a "atual" por
@@ -1734,6 +1738,7 @@ async function agruparProcedimentosPorArquivos(arquivos) {
     const tituloGuess = (g.titulos[0] || tituloBasePorNomeArquivo(candidatos[candidatos.length - 1].file.name)).toUpperCase();
     return { codigo: g.codigo, tituloGuess, candidatos, pendente, motivo };
   });
+  return { grupos: grupoArray, ignorados };
 }
 
 function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciais, aoVoltar }) {
@@ -1761,10 +1766,17 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     setAnalisando(true);
     try {
     let origemNome = "";
+    // Nunca reimportar um backup/exportação gerado pelo próprio sistema — se a pasta escolhida
+    // contiver um desses .zip (ex.: por estar dentro da pasta padrão de downloads), ele é
+    // descartado da análise sem nem entrar na estrutura, independente de onde estiver.
+    const arquivosValidos = files.filter((f) => !/\.zip$/i.test(f.name));
     const porPasta = new Map();
-    files.forEach((f) => {
+    arquivosValidos.forEach((f) => {
       const partes = (f.webkitRelativePath || f.name).split("/");
-      if (partes.length < 2) return; // arquivo direto na raiz, sem pasta de Área — fica de fora (fase 1)
+      // Precisa de pelo menos Origem/Área/arquivo (3 segmentos). Um arquivo direto na raiz da
+      // pasta escolhida (Origem/arquivo.ext, 2 segmentos) NÃO é uma Área — é só um arquivo solto,
+      // e ficava sendo tratado (por bug) como se o próprio nome do arquivo fosse uma pasta.
+      if (partes.length < 3) return;
       origemNome = origemNome || partes[0];
       const pasta = partes[1];
       if (!porPasta.has(pasta)) porPasta.set(pasta, []);
@@ -1778,9 +1790,10 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     });
     // Lê o cabeçalho de cada .docx (via JSZip) pra determinar a revisão automaticamente — por
     // isso a análise agora é assíncrona; o botão fica desabilitado com um aviso enquanto processa.
-    let areasCandidatas = await Promise.all(entradasArea.map(async ([pastaOriginal, arquivosPasta]) => ({
-      pastaOriginal, ...normalizarNomeArea(pastaOriginal), grupos: await agruparProcedimentosPorArquivos(arquivosPasta),
-    })));
+    let areasCandidatas = await Promise.all(entradasArea.map(async ([pastaOriginal, arquivosPasta]) => {
+      const { grupos, ignorados } = await agruparProcedimentosPorArquivos(arquivosPasta);
+      return { pastaOriginal, ...normalizarNomeArea(pastaOriginal), grupos, ignorados };
+    }));
     // Nenhuma Área pode repetir índice — resolve antes de calcular Lista de Procedimentos/Modelo -
     // POP, que dependem do maior índice já sem conflitos.
     areasCandidatas = resolverIndicesUnicosDeAreas(areasCandidatas);
@@ -1807,7 +1820,7 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     // Ordena por índice pra exibição — Áreas primeiro, Modelo - POP e Lista de Procedimentos por
     // último (na posição certa, por construção); pendências sem índice ficam ao final.
     const areas = [...areasCandidatas, ...areasEspeciais].sort((a, b) => (a.indice ?? Infinity) - (b.indice ?? Infinity));
-    const totalArquivos = files.length;
+    const totalArquivos = arquivosValidos.length;
     const totalProcedimentos = areas.reduce((s, a) => s + a.grupos.length, 0);
     const totalArquivosDocx = areas.reduce((s, a) => s + a.grupos.reduce((s2, g) => s2 + g.candidatos.length, 0), 0);
     const totalPendencias = areas.reduce((s, a) => s + (a.pendente ? 1 : 0) + a.grupos.filter((g) => g.pendente).length, 0);
@@ -1841,7 +1854,9 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     try {
       const zipBackup = new window.JSZip();
       resultado.areas.forEach((a) => {
-        const arquivosDaArea = (a.ehListaProcedimentos || a.ehModeloPop) ? (a.arquivosBrutos || []) : a.grupos.flatMap((g) => g.candidatos.map((c) => c.file));
+        const arquivosDaArea = (a.ehListaProcedimentos || a.ehModeloPop)
+          ? (a.arquivosBrutos || [])
+          : [...a.grupos.flatMap((g) => g.candidatos.map((c) => c.file)), ...(a.ignorados || [])];
         arquivosDaArea.forEach((f) => zipBackup.file(f.webkitRelativePath || f.name, f));
       });
       const blobBackup = await zipBackup.generateAsync({ type: "blob" });
@@ -1952,6 +1967,11 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
               <h3 style={{ margin: "0 0 4px", color: CORES.azul, fontSize: 15 }}>{area.pastaNorm}</h3>
               {area.pastaOriginal !== area.pastaNorm && <p style={{ fontSize: 11.5, color: CORES.cinza, margin: "0 0 8px" }}>Pasta original: "{area.pastaOriginal}"</p>}
               {area.pendente && <p style={{ fontSize: 12, color: CORES.laranja, margin: "0 0 8px" }}>⚠ Pendência: {area.motivo}</p>}
+              {area.ignorados && area.ignorados.length > 0 && (
+                <p style={{ fontSize: 11.5, color: CORES.cinza, margin: "0 0 8px" }}>
+                  {area.ignorados.length} arquivo(s) não-.docx nesta pasta (não entram como procedimentos, mas continuam preservados na origem e no backup): {area.ignorados.map((f) => f.name).join(", ")}
+                </p>
+              )}
               {(area.ehListaProcedimentos || area.ehModeloPop) ? (
                 <p style={{ fontSize: 12.5, color: CORES.cinza, margin: 0 }}>Pasta especial "{area.nome}" — {area.arquivosBrutos.length} arquivo(s), não entram como procedimentos do acervo.</p>
               ) : area.grupos.length === 0 ? (
