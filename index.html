@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.19.0";
+const VERSAO_APP = "1.19.1";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1028,12 +1028,17 @@ function TelaPainelPops({ dados }) {
 
 // Modal de detalhe/workflow de um POP — ações condicionadas ao papel do usuário (Auditor/Avaliador/SSMA)
 // Nome exibido/baixado de um arquivo de revisão de POP — nunca o nome original que a pessoa
-// enviou, sempre uma máscara pelo código. A revisão ATUAL (a mais recente já concluída,
-// pop.revisaoAtual) usa só o código, sem número (ex.: "POP-BO-BEN-BEM-001.docx"); cada revisão
-// anterior (já superada) ganha o sufixo "- rev_NN" (ex.: "POP-BO-BEN-BEM-001 - rev_02.docx").
-// Reusado pelo modal de detalhe do POP e pela Importação/Exportação (aba Dados).
+// enviou, sempre CÓDIGO + TÍTULO (maiúsculas). A revisão ATUAL (a mais recente já concluída,
+// pop.revisaoAtual) tem nome limpo, sem nenhum indicador de revisão — nem sufixo, nem "_" solto no
+// final (mesmo que o título cadastrado termine em "_", esse resíduo é removido aqui: nunca deve
+// sobrar um "_" como se fosse indicador de revisão, ex.: "POP-BO-BEN-BEM-001 - OPERAÇÃO DA
+// BRITAGEM.docx"). Cada revisão anterior (já superada) ganha o sufixo " - Rev.NN" (ex.:
+// "POP-BO-BEN-BEM-001 - OPERAÇÃO DA BRITAGEM - Rev.01.docx"). Reusado pelo modal de detalhe do POP
+// e pela Importação/Exportação (aba Dados).
 function nomeArquivoRevPop(pop, rev) {
-  return rev === (pop.revisaoAtual ?? 0) ? `${pop.codigo}.docx` : `${pop.codigo} - rev_${String(rev).padStart(2, "0")}.docx`;
+  const titulo = (pop.titulo || "").toUpperCase().trim().replace(/[_\s]+$/, "");
+  const base = `${pop.codigo} - ${titulo}`;
+  return rev === (pop.revisaoAtual ?? 0) ? `${base}.docx` : `${base} - Rev.${String(rev).padStart(2, "0")}.docx`;
 }
 
 // Href/atributo de download de um arquivo de POP — mesmo padrão dual já usado no anexo de
@@ -2361,7 +2366,7 @@ function TelaExportacaoProcedimentos({ dados, setDados, usuario, aoVoltar }) {
     <div>
       <button onClick={aoVoltar} style={{ border: "none", background: "none", color: CORES.laranja, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: 12, padding: 0, fontFamily: "inherit" }}>← Voltar a Dados</button>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Exportação de Procedimentos</h2>
-      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>Gera um .zip com toda a estrutura padronizada do acervo: revisão atual (nome limpo) e revisões anteriores (sufixo "- rev_NN") de cada procedimento, organizadas por Área.</p>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>Gera um .zip com toda a estrutura padronizada do acervo: revisão atual (nome limpo) e revisões anteriores (sufixo "- Rev.NN") de cada procedimento, organizadas por Área.</p>
       <Cartao style={{ maxWidth: 480 }}>
         <p style={{ fontSize: 13, color: CORES.azul, margin: "0 0 12px" }}>{pops.length} procedimento(s) no acervo.</p>
         <Botao onClick={gerar} disabled={gerando}>{gerando ? "Gerando…" : "📤 Gerar exportação"}</Botao>
