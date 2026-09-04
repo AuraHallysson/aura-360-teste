@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.18.1";
+const VERSAO_APP = "1.19.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -284,8 +284,9 @@ const PAPEL_POPS_OPCOES = [
 const PAPEL_POPS_PROCEDIMENTOS = { administrador: "editar", auditor: "editar", avaliador: "ver", ssma: "ver", leitor: "ver" };
 const PAPEL_POPS_SSMA = { administrador: "oculto", auditor: "oculto", avaliador: "oculto", ssma: "editar", leitor: "oculto" };
 const PAPEL_POPS_LISTA_MESTRA = { administrador: "editar", auditor: "ver", avaliador: "ver", ssma: "ver", leitor: "ver" };
-// Pendências — tela ainda não implementada (reservada para uso futuro); só Administrador e
-// Auditor devem enxergar o item no menu, os demais papéis nem veem a opção.
+// Pendências — revisões sem arquivo original carregado no sistema; só Administrador e Auditor
+// devem enxergar o item no menu (são os únicos que podem enviar o arquivo), os demais papéis nem
+// veem a opção.
 const PAPEL_POPS_PENDENCIAS = { administrador: "editar", auditor: "editar", avaliador: "oculto", ssma: "oculto", leitor: "oculto" };
 const NIVEL_POPS = { oculto: 0, ver: 1, editar: 2 };
 const capacidadePops = (u, mapa, dados) => {
@@ -1629,15 +1630,90 @@ function TelaListaMestraPops({ dados }) {
 }
 
 // Configurações do Subsistema Gestão de Procedimentos — só GM ou administrador delegado.
-// Pendências — reservada para uso futuro (ainda sem funcionalidade). Só aparece no menu para
-// Administrador/Auditor (ver PAPEL_POPS_PENDENCIAS); os demais papéis nem veem o item.
-function TelaPendenciasPops() {
+// Pendências — lista toda revisão de todo procedimento sem arquivo original carregado no sistema
+// (ver DOCX_MARCA_DAGUA_TEXTO/obterArquivoParaDownload: essas revisões não têm o que baixar) e
+// deixa enviar o .docx correspondente ali mesmo, revisão por revisão. Só aparece no menu para
+// Administrador/Auditor (ver PAPEL_POPS_PENDENCIAS); os demais papéis nem veem o item — por isso,
+// dentro da tela, não é preciso checar capacidade de novo: quem chega aqui já pode editar.
+function TelaPendenciasPops({ dados, setDados, usuario }) {
+  const [enviando, setEnviando] = useState(null); // `${popId}-${rev}` sendo enviado, ou null
+
+  const pendenciasArquivo = [];
+  (dados.pops || []).forEach((pop) => {
+    (pop.historico || []).forEach((h) => {
+      if (!(h.arquivo?.dataUrl || h.arquivo?.url)) pendenciasArquivo.push({ pop, h });
+    });
+  });
+
+  const enviarArquivoRevisao = async (pop, h, file) => {
+    if (!/\.docx$/i.test(file.name)) { avisar('Só é possível enviar um arquivo ".docx".'); return; }
+    const chave = `${pop.id}-${h.rev}`;
+    setEnviando(chave);
+    try {
+      const arquivoSalvo = await salvarArquivoProcedimento(file, pop.area);
+      const popsAtual = (dados.pops || []).map((p) => p.id !== pop.id ? p : {
+        ...p,
+        historico: (p.historico || []).map((hh) => hh.rev !== h.rev ? hh : { ...hh, arquivo: arquivoSalvo }),
+      });
+      let nd = { ...dados, pops: popsAtual };
+      nd = comLog(nd, usuario, "Procedimentos", "Enviou arquivo de uma revisão pendente", `${pop.codigo} — revisão ${String(h.rev).padStart(2, "0")}`, String(pop.id));
+      setDados(nd); await salvarDados(nd);
+      avisar(`Arquivo enviado para ${pop.codigo} — revisão ${String(h.rev).padStart(2, "0")}.`);
+    } catch (e) {
+      avisar("Não foi possível enviar o arquivo: " + (e.message || String(e)));
+    } finally {
+      setEnviando(null);
+    }
+  };
+
+  if (pendenciasArquivo.length === 0) {
+    return (
+      <Cartao style={{ maxWidth: 560, margin: "24px auto", textAlign: "center", padding: "40px 32px", borderTop: "4px solid #0f6b3f" }}>
+        <div style={{ fontSize: 44 }}>✅</div>
+        <h2 style={{ color: CORES.azul, margin: "10px 0 6px" }}>Pendências</h2>
+        <p style={{ color: CORES.cinza, fontSize: 14, margin: 0 }}>Nenhuma pendência no momento — todas as revisões têm arquivo carregado no sistema.</p>
+      </Cartao>
+    );
+  }
+
   return (
-    <Cartao style={{ maxWidth: 560, margin: "24px auto", textAlign: "center", padding: "40px 32px", borderTop: `4px solid ${CORES.laranja}` }}>
-      <div style={{ fontSize: 44 }}>🚧</div>
-      <h2 style={{ color: CORES.azul, margin: "10px 0 6px" }}>Pendências</h2>
-      <p style={{ color: CORES.cinza, fontSize: 14, margin: 0 }}>Em construção — será utilizado em breve.</p>
-    </Cartao>
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Pendências</h2>
+      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>{pendenciasArquivo.length} revisão(ões) sem arquivo original carregado no sistema. Envie o .docx correspondente a cada uma.</p>
+      <Cartao style={{ padding: 0, overflow: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 680 }}>
+          <thead><tr>
+            {["Código / Área", "Título", "Rev.", "Data", "Descrição", ""].map((h) => (
+              <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {pendenciasArquivo.map(({ pop, h }) => {
+              const chave = `${pop.id}-${h.rev}`;
+              const emEnvio = enviando === chave;
+              return (
+                <tr key={chave}>
+                  <td style={tdPops}><b>{pop.codigo}</b><br /><span style={{ fontSize: 11.5, color: CORES.cinza }}>{pop.area}</span></td>
+                  <td style={tdPops}>{pop.titulo}</td>
+                  <td style={tdPops}>{String(h.rev).padStart(2, "0")}</td>
+                  <td style={tdPops}>{h.data}</td>
+                  <td style={tdPops}>{h.descricao}</td>
+                  <td style={tdPops}>
+                    <label style={{ display: "inline-block", cursor: emEnvio ? "wait" : "pointer" }}>
+                      <Botao tipo="contorno" style={{ pointerEvents: "none", padding: "5px 12px", fontSize: 12.5 }} disabled={emEnvio}>
+                        {emEnvio ? "Enviando…" : "⬆ Enviar arquivo (.docx)"}
+                      </Botao>
+                      <input type="file" accept=".docx" style={{ display: "none" }} disabled={emEnvio}
+                        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) enviarArquivoRevisao(pop, h, f); }} />
+                    </label>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Cartao>
+    </div>
   );
 }
 
@@ -5430,7 +5506,7 @@ function App() {
             <div style={{ minWidth: 0 }}>
               {(tela === "MENU" || tela === "PAINEL") && <TelaPainelPops dados={dados} />}
               {tela === "PROCEDIMENTOS" && <TelaProcedimentosPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
-              {tela === "PENDENCIAS" && capPendenciasPops !== "oculto" && <TelaPendenciasPops />}
+              {tela === "PENDENCIAS" && capPendenciasPops !== "oculto" && <TelaPendenciasPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
               {tela === "SSMA" && <TelaSSMAPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
               {tela === "LISTA_MESTRA" && <TelaListaMestraPops dados={dados} />}
               {tela === "CONFIGURACOES" && souAdminDePops && <TelaConfigPops dados={dados} setDados={setDados} usuario={usuarioAtual} />}
