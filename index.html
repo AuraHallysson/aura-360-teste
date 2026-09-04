@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.16.1";
+const VERSAO_APP = "1.16.2";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1606,6 +1606,13 @@ function ehPastaModeloPop(nomeOriginal) {
   const limpo = (nomeOriginal || "").replace(/^\d+\s*[-–—]?\s*/, "").trim().toLowerCase().replace(/\s+/g, " ").replace(/\s*-\s*/g, " - ");
   return limpo === "modelo - pop" || limpo === "modelo pop";
 }
+// Pasta chamada "Backup"/"Backups" (com qualquer índice/variação na frente) nunca é importada —
+// nem como Área, nem como pasta especial. É descartada por completo, junto com os arquivos que
+// tiver dentro, do mesmo jeito que um .zip de backup é descartado (regra: nunca reimportar backup).
+function ehPastaBackup(nomeOriginal) {
+  const limpo = (nomeOriginal || "").replace(/^\d+\s*[-–—]?\s*/, "").trim().toLowerCase().replace(/\s+/g, " ");
+  return limpo === "backup" || limpo === "backups";
+}
 // Garante índice único entre as Áreas — nunca pode existir duas pastas de Área com o mesmo
 // número (regra do prompt). Preserva o índice original de quem "chegou primeiro" (ordenado pelo
 // próprio índice original) e empurra qualquer área conflitante pro próximo índice livre,
@@ -1784,6 +1791,7 @@ function TelaImportacaoProcedimentos({ dados, setDados, usuario, arquivosIniciai
     });
     let pastaListaProcedimentos = null, pastaModeloPop = null;
     const entradasArea = [...porPasta.entries()].filter(([pastaOriginal, arquivosPasta]) => {
+      if (ehPastaBackup(pastaOriginal)) return false; // nunca importar pasta de backup — nem como Área, nem como pasta especial
       if (ehPastaListaDeProcedimentos(pastaOriginal)) { pastaListaProcedimentos = { pastaOriginal, arquivosPasta }; return false; }
       if (ehPastaModeloPop(pastaOriginal)) { pastaModeloPop = { pastaOriginal, arquivosPasta }; return false; }
       return true;
