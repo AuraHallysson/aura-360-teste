@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.19.1";
+const VERSAO_APP = "1.19.3";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -116,19 +116,10 @@ const MATERIAIS_INICIAIS = [
   { codigo: "105090", descricao: "TELA DE PENEIRAMENTO 12MM 1500X2000", unidade: "UN" },
 ];
 
-// Migração única (2026-08-24) do acervo que já existia no antigo app separado "aura-pops" —
-// a partir daqui, a gestão passa a ser só aqui dentro (sem depender de nenhum servidor externo).
-// Os arquivos .docx de cada POP não foram trazidos (ficam só no arquivo físico/rede); a partir de
-// agora, cada revisão nova anexa o próprio arquivo aqui dentro (como já funciona em Compras e Cadastros).
-const AREAS_POPS_INICIAIS = [
-  { id: 1, numero: 1, nome: "Área de Teste 1", pastaNorm: "01 - Área de Teste 1" },
-  { id: 2, numero: 2, nome: "Área de Teste 2", pastaNorm: "02 - Área de Teste 2" },
-];
-const POPS_INICIAIS = [
-  { id: 1, codigo: "POP-TESTE-001", titulo: "Procedimento de exemplo 1", area: "01 - Área de Teste 1", status: "PUBLICADO", revisaoAtual: 1, dataRevisao: "01/06/2026", dataRevisaoIso: "2026-06-01", validade: "2027-06-01", singularUpload: false, criadoEm: "2026-08-18T18:20:38.919Z", historico: [{ rev: 0, data: "01/01/2025", descricao: "Inicial" }, { rev: 1, data: "01/06/2026", descricao: "Revisão de exemplo" }] },
-  { id: 2, codigo: "POP-TESTE-002", titulo: "Procedimento de exemplo 2", area: "02 - Área de Teste 2", status: "CONCLUIDO", revisaoAtual: 0, dataRevisao: "01/02/2025", dataRevisaoIso: "2025-02-01", validade: "2026-02-01", singularUpload: true, criadoEm: "2026-08-18T18:20:39.132Z", historico: [{ rev: 0, data: "01/02/2025", descricao: "Inicial" }] },
-  { id: 3, codigo: "POP-TESTE-003", titulo: "Procedimento de exemplo 3", area: "01 - Área de Teste 1", status: "PUBLICADO", revisaoAtual: 0, dataRevisao: "01/01/2025", dataRevisaoIso: "2025-01-01", validade: "2026-01-01", singularUpload: false, criadoEm: "2026-08-18T18:20:39.174Z", historico: [{ rev: 0, data: "01/01/2025", descricao: "Inicial" }] },
-];
+// O acervo de Procedimentos começa vazio — cada Área/POP é criado pelo próprio usuário (manual ou
+// via Importação, aba Dados) em vez de vir com dados de exemplo pré-carregados.
+const AREAS_POPS_INICIAIS = [];
+const POPS_INICIAIS = [];
 const POPS_CONFIG_INICIAL = { validadeDias: 365, alertasDias: [60, 45, 30, 15], pendenteRevisaoDias: 45 };
 
 const nomeDoEmail = (email) =>
@@ -1808,8 +1799,14 @@ function palpiteRevisaoPorNome(nomeArquivo) {
 }
 // Código do procedimento a partir do nome do arquivo (ex.: "POP-BO-BEN-BEM-001") — só um apoio
 // para agrupar arquivos do mesmo procedimento; nunca é a única fonte usada para decidir a revisão.
+// Sem a flag /i de propósito: um código de verdade é sempre TODO em maiúsculas (padrão Aura); um
+// título colado sem espaço/hífen (ex.: "...-001-Oxicorte Maçarico.docx") começa com maiúscula mas
+// segue em minúsculas, então o lookahead final barra a captura assim que a próxima letra é
+// minúscula — sem isso, cada segmento de até 5 caracteres "engolia" o começo do título (virava
+// "...-001-OXICO" em vez de parar em "...-001"). Mantém sempre o espaçamento/separador entre o
+// código e o nome do procedimento.
 function codigoPorNomeArquivo(nomeArquivo) {
-  const m = (nomeArquivo || "").match(/^([A-Z]{2,5}(?:-[A-Z0-9]{1,5}){2,5})/i);
+  const m = (nomeArquivo || "").match(/^([A-Z]{2,5}(?:-[A-Z0-9]{1,5}){2,5})(?![a-zA-Z])/);
   return m ? m[1].toUpperCase() : null;
 }
 // Título "limpo" a partir do nome do arquivo — remove código/extensão/sufixos de revisão — usado
