@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.19.6";
+const VERSAO_APP = "1.20.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1111,11 +1111,15 @@ async function obterArquivoParaDownload(pop, h) {
   return { blob, nome: nomeArquivoRevPop(pop, h.rev) };
 }
 
-function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) {
+function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, removerPop, aoFechar }) {
   const [modoObs, setModoObs] = useState(null); // null | "reprovar" | "confirmar"
   const [textoObs, setTextoObs] = useState("");
   const [avaliadorEsc, setAvaliadorEsc] = useState("");
   const [baixandoRev, setBaixandoRev] = useState(null); // número da revisão sendo gerada/baixada, ou null
+  const [mostrarFormRemocao, setMostrarFormRemocao] = useState(false);
+  const [aprovadorRemocaoEsc, setAprovadorRemocaoEsc] = useState("");
+  const [modoObsRemocao, setModoObsRemocao] = useState(null); // null | "reprovarAprovador" | "reprovarSSMA"
+  const [textoObsRemocao, setTextoObsRemocao] = useState("");
 
   // Baixa qualquer revisão do histórico (real ou gerada na hora) — sempre disponível, com marca
   // d'água em toda revisão que não for a atual (obterArquivoParaDownload decide isso).
@@ -1138,6 +1142,12 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
   const avaliadores = Object.entries(dados.usuarios)
     .filter(([email, u]) => u.ativo !== false && temPapelPops(u, "avaliador", dados))
     .filter(([email]) => email !== (pop.auditorEmail || usuario.email));
+
+  // Solicitação de remoção do POP — fluxo próprio, à parte da revisão normal, nunca pede/recebe
+  // arquivo (é só aprovação da exclusão): Auditor solicita → Aprovador (papel Avaliador) decide →
+  // se aprovado, o próprio Auditor encaminha ao SSMA → SSMA decide → só aí o POP é excluído de fato.
+  const remocao = pop.remocao || null;
+  const souAprovadorRemocao = !!remocao && remocao.aprovadorEmail === usuario.email;
 
   const rodar = async (fn) => { try { await fn(); } catch (e) { avisar(e.message || String(e)); } };
 
@@ -1199,6 +1209,44 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
     setModoObs(null); setTextoObs("");
   });
 
+  // --- Remoção do POP (fluxo próprio, sem upload de arquivo em nenhuma etapa) --------------------
+  const solicitarRemocao = () => rodar(async () => {
+    if (!aprovadorRemocaoEsc) { avisar("Selecione o aprovador da remoção."); return; }
+    await atualizarPop(pop.id, {
+      remocao: {
+        solicitanteEmail: usuario.email, solicitanteNome: usuario.nome, solicitadoEm: new Date().toISOString(),
+        aprovadorEmail: aprovadorRemocaoEsc, etapa: "AGUARDANDO_APROVADOR", avaliacaoAprovador: null, avaliacaoSSMA: null,
+      },
+    }, "Solicitou remoção do procedimento", `${pop.codigo} → ${aprovadorRemocaoEsc}`);
+    setMostrarFormRemocao(false); setAprovadorRemocaoEsc("");
+  });
+
+  const aprovarRemocaoAprovador = () => rodar(() => atualizarPop(pop.id, {
+    remocao: { ...remocao, etapa: "AGUARDANDO_ENCAMINHAMENTO", avaliacaoAprovador: { aprovado: true, obs: "", nome: usuario.nome, data: new Date().toISOString() } },
+  }, "Aprovou a remoção do procedimento", pop.codigo));
+
+  const reprovarRemocaoAprovador = () => rodar(async () => {
+    if (!textoObsRemocao.trim()) { avisar("Justificativa obrigatória ao reprovar a remoção."); return; }
+    await atualizarPop(pop.id, { remocao: null }, "Reprovou a remoção do procedimento", textoObsRemocao);
+    setModoObsRemocao(null); setTextoObsRemocao("");
+  });
+
+  const encaminharRemocaoSSMA = () => rodar(() => atualizarPop(pop.id, {
+    remocao: { ...remocao, etapa: "AGUARDANDO_SSMA" },
+  }, "Encaminhou a remoção do procedimento ao SSMA", pop.codigo));
+
+  const aprovarRemocaoSSMA = () => rodar(async () => {
+    await removerPop(pop.id, "Aprovou a remoção do procedimento (SSMA) — excluído do acervo", pop.codigo);
+    avisar(`${pop.codigo} removido do acervo. Lembre-se de remover também na plataforma oficial de procedimentos.`);
+    aoFechar();
+  });
+
+  const reprovarRemocaoSSMA = () => rodar(async () => {
+    if (!textoObsRemocao.trim()) { avisar("Justificativa obrigatória ao reprovar a remoção."); return; }
+    await atualizarPop(pop.id, { remocao: null }, "Reprovou a remoção do procedimento (SSMA)", textoObsRemocao);
+    setModoObsRemocao(null); setTextoObsRemocao("");
+  });
+
   const hist = pop.historico || [];
   const nomeArquivoRev = (rev) => nomeArquivoRevPop(pop, rev);
   // Procedimento "atual" para baixar ao iniciar uma revisão = a revisão concluída mais recente no
@@ -1211,6 +1259,10 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
     <div style={{ position: "fixed", inset: 0, background: "rgba(45,61,112,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 16 }}>
       <div style={{ background: "#fff", borderRadius: 12, padding: 24, maxWidth: 680, width: "100%", maxHeight: "88vh", overflowY: "auto", position: "relative" }}>
         <button type="button" onClick={aoFechar} style={{ position: "absolute", top: 14, right: 16, border: "none", background: "none", fontSize: 20, color: CORES.cinza, cursor: "pointer" }}>×</button>
+        {meAuditor && !remocao && ["PUBLICADO", "CONCLUIDO"].includes(pop.status) && (
+          <button type="button" onClick={() => setMostrarFormRemocao((v) => !v)} title="Solicitar remoção do procedimento"
+            style={{ position: "absolute", top: 12, right: 46, border: "none", background: "none", fontSize: 17, color: CORES.cinza, cursor: "pointer", padding: 4 }}>🗑️</button>
+        )}
         <h3 style={{ margin: "0 0 2px", color: CORES.azul }}>{pop.codigo}</h3>
         <div style={{ color: CORES.cinza, fontSize: 13 }}>{pop.titulo} · {pop.area}</div>
         <div style={{ margin: "10px 0" }}>
@@ -1218,7 +1270,70 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, aoFechar }) 
           <span style={{ fontSize: 13, color: CORES.azul, marginLeft: 10 }}>Rev <b>{String(pop.revisaoAtual ?? 0).padStart(2, "0")}</b> · {pop.dataRevisao || "—"} · Validade: <b>{pop.validade ? formatarDataBR(pop.validade) : "—"}</b></span>
         </div>
 
-        {["PUBLICADO", "CONCLUIDO"].includes(pop.status) && meAuditor && <Botao tipo="laranja" onClick={iniciar}>Iniciar revisão</Botao>}
+        {mostrarFormRemocao && !remocao && (
+          <div style={{ background: "#fff4f2", border: `1px solid ${CORES.laranja}`, borderRadius: 8, padding: 14, marginBottom: 10 }}>
+            <p style={{ fontSize: 13, color: CORES.azul, margin: "0 0 8px", fontWeight: 700 }}>🗑️ Solicitar remoção deste procedimento</p>
+            <p style={{ fontSize: 12, color: CORES.cinza, margin: "0 0 10px" }}>Segue o mesmo fluxo de aprovação de uma revisão (Aprovador → SSMA), mas sem pedir nenhum arquivo — é só a exclusão do procedimento do acervo.</p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <select style={{ ...inputStyle, width: "auto" }} value={aprovadorRemocaoEsc} onChange={(e) => setAprovadorRemocaoEsc(e.target.value)}>
+                <option value="">Selecione o aprovador…</option>
+                {avaliadores.map(([email, u]) => <option key={email} value={email}>{u.nome}</option>)}
+              </select>
+              <Botao tipo="perigo" onClick={solicitarRemocao}>Confirmar solicitação</Botao>
+              <Botao tipo="contorno" onClick={() => { setMostrarFormRemocao(false); setAprovadorRemocaoEsc(""); }}>Cancelar</Botao>
+            </div>
+          </div>
+        )}
+
+        {remocao && (
+          <div style={{ background: "#fff4f2", border: `1px solid ${CORES.laranja}`, borderRadius: 8, padding: 14, marginBottom: 10 }}>
+            <p style={{ fontSize: 13, color: CORES.azul, margin: "0 0 6px", fontWeight: 700 }}>🗑️ Solicitação de remoção em andamento</p>
+            <p style={{ fontSize: 12, color: CORES.cinza, margin: "0 0 10px" }}>Solicitada por {remocao.solicitanteNome} em {new Date(remocao.solicitadoEm).toLocaleString("pt-BR")}. Nenhum arquivo é solicitado ou enviado neste fluxo — só a aprovação da exclusão.</p>
+
+            {remocao.etapa === "AGUARDANDO_APROVADOR" && (
+              souAprovadorRemocao ? (
+                modoObsRemocao === "reprovarAprovador" ? (
+                  <div>
+                    <textarea style={{ ...inputStyle, minHeight: 60 }} placeholder="Motivo da reprovação (obrigatório)" value={textoObsRemocao} onChange={(e) => setTextoObsRemocao(e.target.value)} />
+                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}><Botao tipo="perigo" onClick={reprovarRemocaoAprovador}>Confirmar reprovação</Botao><Botao tipo="contorno" onClick={() => { setModoObsRemocao(null); setTextoObsRemocao(""); }}>Cancelar</Botao></div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Botao onClick={aprovarRemocaoAprovador}>Aprovar remoção</Botao>
+                    <Botao tipo="perigo" onClick={() => setModoObsRemocao("reprovarAprovador")}>Reprovar remoção</Botao>
+                  </div>
+                )
+              ) : <span style={{ fontSize: 13, color: CORES.cinza }}>Aguardando aprovação de {dados.usuarios[remocao.aprovadorEmail]?.nome || remocao.aprovadorEmail}.</span>
+            )}
+
+            {remocao.etapa === "AGUARDANDO_ENCAMINHAMENTO" && (
+              meAuditor ? (
+                <div>
+                  <p style={{ fontSize: 12.5, color: "#0f6b3f", margin: "0 0 8px" }}>✓ Aprovada por {remocao.avaliacaoAprovador?.nome}. Encaminhe ao SSMA para concluir.</p>
+                  <Botao onClick={encaminharRemocaoSSMA}>Encaminhar ao SSMA</Botao>
+                </div>
+              ) : <span style={{ fontSize: 13, color: CORES.cinza }}>Remoção aprovada — aguardando o Auditor encaminhar ao SSMA.</span>
+            )}
+
+            {remocao.etapa === "AGUARDANDO_SSMA" && (
+              meSSMA ? (
+                modoObsRemocao === "reprovarSSMA" ? (
+                  <div>
+                    <textarea style={{ ...inputStyle, minHeight: 60 }} placeholder="Motivo da reprovação (obrigatório)" value={textoObsRemocao} onChange={(e) => setTextoObsRemocao(e.target.value)} />
+                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}><Botao tipo="perigo" onClick={reprovarRemocaoSSMA}>Confirmar reprovação</Botao><Botao tipo="contorno" onClick={() => { setModoObsRemocao(null); setTextoObsRemocao(""); }}>Cancelar</Botao></div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Botao onClick={aprovarRemocaoSSMA}>Aprovar remoção (exclui o procedimento)</Botao>
+                    <Botao tipo="perigo" onClick={() => setModoObsRemocao("reprovarSSMA")}>Reprovar remoção</Botao>
+                  </div>
+                )
+              ) : <span style={{ fontSize: 13, color: CORES.cinza }}>Aguardando aprovação do SSMA.</span>
+            )}
+          </div>
+        )}
+
+        {!remocao && ["PUBLICADO", "CONCLUIDO"].includes(pop.status) && meAuditor && <Botao tipo="laranja" onClick={iniciar}>Iniciar revisão</Botao>}
 
         {pop.status === "EM_REVISAO" && meAuditor && (
           <div style={{ background: CORES.cinzaClaro, borderRadius: 8, padding: 14, marginTop: 8 }}>
@@ -1416,6 +1531,14 @@ function TelaProcedimentosPops({ dados, setDados, usuario }) {
     setDados(nd); await salvarDados(nd);
   };
 
+  // Só é chamada no fim do fluxo de remoção (após aprovação do SSMA) — exclui de fato o
+  // procedimento do acervo. Nunca usada para qualquer outra ação (edição sempre passa por atualizarPop).
+  const removerPop = async (popId, acao, detalhe) => {
+    let nd = { ...dados, pops: dados.pops.filter((p) => p.id !== popId) };
+    nd = comLog(nd, usuario, "Procedimentos", acao, detalhe, popId);
+    setDados(nd); await salvarDados(nd);
+  };
+
   const criarPop = async (novoPop) => {
     let nd = { ...dados, pops: [...dados.pops, novoPop] };
     nd = comLog(nd, usuario, "Procedimentos", "Cadastrou procedimento", novoPop.codigo, novoPop.id);
@@ -1473,7 +1596,7 @@ function TelaProcedimentosPops({ dados, setDados, usuario }) {
         </table>
       </Cartao>
       {popSelecionado && (
-        <ModalProcedimentoPops pop={popSelecionado} dados={dados} usuario={usuario} atualizarPop={atualizarPop} aoFechar={() => setPopAberto(null)} />
+        <ModalProcedimentoPops pop={popSelecionado} dados={dados} usuario={usuario} atualizarPop={atualizarPop} removerPop={removerPop} aoFechar={() => setPopAberto(null)} />
       )}
       {criando && possoCriar && (
         <ModalNovoProcedimentoPops dados={dados} usuario={usuario} aoCriar={criarPop} aoFechar={() => setCriando(false)} />
