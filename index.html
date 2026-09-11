@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.19.4";
+const VERSAO_APP = "1.19.5";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -499,6 +499,17 @@ async function carregarDados() {
       if (!Array.isArray(d.popsAreas)) d.popsAreas = AREAS_POPS_INICIAIS;
       if (!d.popsConfig) d.popsConfig = POPS_CONFIG_INICIAL;
       if (!Array.isArray(d.importacoesPops)) d.importacoesPops = [];
+      // Limpeza única (2026-09-11): navegadores que já tinham aberto o app antes de
+      // POPS_INICIAIS/AREAS_POPS_INICIAIS/MATERIAIS_INICIAIS serem esvaziados continuavam vendo o
+      // acervo de exemplo — os "if (!Array.isArray(...))" acima só preenchem quando o campo nem
+      // existe, então dado já carregado nunca era tocado. Roda só uma vez por navegador (marca
+      // d._exemploLimpoV1) e nunca mais depois disso, para não apagar dados reais criados no futuro.
+      if (!d._exemploLimpoV1) {
+        d.pops = [];
+        d.popsAreas = [];
+        d.materiais = [];
+        d._exemploLimpoV1 = true;
+      }
       return d;
     }
   } catch (e) { /* chave inexistente */ }
