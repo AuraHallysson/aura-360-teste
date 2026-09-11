@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.20.0";
+const VERSAO_APP = "1.20.1";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1988,11 +1988,15 @@ async function identificarProcedimentoDoArquivo(file) {
   const cab = await lerCabecalhoDocx(file);
   const codigoPeloNome = codigoPorNomeArquivo(file.name);
   const revisaoPeloNome = palpiteRevisaoPorNome(file.name);
-  if (cab.erro) return { codigo: codigoPeloNome, titulo: null, revPalpite: revisaoPeloNome, fonte: "nome do arquivo", erroLeitura: cab.erro };
+  // revPalpiteNome vai junto mesmo quando cabeçalho/histórico "ganham" a decisão — serve pra
+  // desempatar depois, em agruparProcedimentosPorArquivos, quando o histórico interno do documento
+  // (comum estar desatualizado/copiado de um "Salvar como") gera duplicidade entre arquivos cujo
+  // NOME já deixa a revisão clara e sem ambiguidade nenhuma.
+  if (cab.erro) return { codigo: codigoPeloNome, titulo: null, revPalpite: revisaoPeloNome, revPalpiteNome: revisaoPeloNome, fonte: "nome do arquivo", erroLeitura: cab.erro };
   const codigo = cab.codigo || codigoPeloNome;
-  if (cab.revisaoCabecalho !== null) return { codigo, titulo: cab.titulo, revPalpite: cab.revisaoCabecalho, fonte: "cabeçalho do documento", erroLeitura: null };
-  if (cab.revisaoHistorico !== null) return { codigo, titulo: cab.titulo, revPalpite: cab.revisaoHistorico, fonte: "histórico de revisões do documento", erroLeitura: null };
-  return { codigo, titulo: cab.titulo, revPalpite: revisaoPeloNome, fonte: "nome do arquivo (cabeçalho sem campo de revisão)", erroLeitura: null };
+  if (cab.revisaoCabecalho !== null) return { codigo, titulo: cab.titulo, revPalpite: cab.revisaoCabecalho, revPalpiteNome: revisaoPeloNome, fonte: "cabeçalho do documento", erroLeitura: null };
+  if (cab.revisaoHistorico !== null) return { codigo, titulo: cab.titulo, revPalpite: cab.revisaoHistorico, revPalpiteNome: revisaoPeloNome, fonte: "histórico de revisões do documento", erroLeitura: null };
+  return { codigo, titulo: cab.titulo, revPalpite: revisaoPeloNome, revPalpiteNome: revisaoPeloNome, fonte: "nome do arquivo (cabeçalho sem campo de revisão)", erroLeitura: null };
 }
 // Agrupa os .docx de uma Área por procedimento (mesmo Código do cabeçalho — ou do nome do arquivo
 // quando o cabeçalho não foi identificado) e determina a revisão de cada um automaticamente. Nada
@@ -2014,11 +2018,24 @@ async function agruparProcedimentosPorArquivos(arquivos) {
   });
   const grupoArray = [...grupos.values()].map((g) => {
     const semRev = g.itens.filter((it) => it.revPalpite === null);
-    const candidatos = g.itens.map((it) => ({ file: it.file, revPalpite: it.revPalpite, blobUrl: URL.createObjectURL(it.file), fonte: it.fonte, erroLeitura: it.erroLeitura, ignorado: false }));
+    const candidatos = g.itens.map((it) => ({ file: it.file, revPalpite: it.revPalpite, revPalpiteNome: it.revPalpiteNome, blobUrl: URL.createObjectURL(it.file), fonte: it.fonte, erroLeitura: it.erroLeitura, ignorado: false }));
     // Sem revisão identificada (nem cabeçalho, nem histórico, nem nome) = candidato a "atual" por
     // eliminação. Mais de um arquivo assim no mesmo grupo é ambíguo e vira pendência.
     const maiorExplicita = Math.max(-1, ...candidatos.filter((c) => c.revPalpite !== null).map((c) => c.revPalpite));
     candidatos.forEach((c) => { if (c.revPalpite === null) c.revPalpite = maiorExplicita + 1; });
+    // Desempate por nome de arquivo: o histórico de revisões DENTRO do documento costuma ficar
+    // desatualizado (cópia de um "Salvar como" que não atualizou a tabela) — quando isso empata dois
+    // ou mais arquivos do mesmo grupo na mesma revisão, mas o NOME de um deles já traz um número de
+    // revisão explícito e diferente do empate (ex.: "- Rev01.docx"), usa o nome pra desempatar em vez
+    // de deixar os dois empatados esperando confirmação manual desnecessária.
+    const contagemRev = {};
+    candidatos.forEach((c) => { contagemRev[c.revPalpite] = (contagemRev[c.revPalpite] || 0) + 1; });
+    candidatos.forEach((c) => {
+      if (contagemRev[c.revPalpite] > 1 && c.revPalpiteNome !== null && c.revPalpiteNome !== c.revPalpite) {
+        c.revPalpite = c.revPalpiteNome;
+        c.fonte = "nome do arquivo (desempate de duplicidade)";
+      }
+    });
     candidatos.sort((a, b) => a.revPalpite - b.revPalpite || a.file.lastModified - b.file.lastModified);
     const revsRepetidas = candidatos.length !== new Set(candidatos.map((c) => c.revPalpite)).size;
     const algumErroLeitura = candidatos.some((c) => c.erroLeitura);
