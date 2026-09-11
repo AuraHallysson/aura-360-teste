@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.19.3";
+const VERSAO_APP = "1.19.4";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -105,16 +105,9 @@ const SESSION_KEY = "aura-sessao-v1-" + AMBIENTE;
 const PRIMEIRO_ADMIN = "admin.teste@empresa-teste.com";
 const DOMINIO = "@empresa-teste.com";
 
-const MATERIAIS_INICIAIS = [
-  { codigo: "100234", descricao: "PARAFUSO SEXTAVADO M12X50 INOX", unidade: "UN" },
-  { codigo: "100987", descricao: "ROLAMENTO ESFERA 6205-2RS", unidade: "PC" },
-  { codigo: "101450", descricao: "CORREIA TRANSPORTADORA EP-500 800MM", unidade: "M" },
-  { codigo: "102311", descricao: "GRAXA EP-2 LITIO BALDE 20KG", unidade: "BD" },
-  { codigo: "103008", descricao: "LUVA NITRILICA CANO LONGO TAM G", unidade: "PAR" },
-  { codigo: "103776", descricao: "FILTRO DE AR PRIMARIO P/ BRITADOR", unidade: "UN" },
-  { codigo: "104521", descricao: "OLEO HIDRAULICO ISO VG 68 TAMBOR 200L", unidade: "TB" },
-  { codigo: "105090", descricao: "TELA DE PENEIRAMENTO 12MM 1500X2000", unidade: "UN" },
-];
+// Base de materiais começa vazia — cada item é cadastrado pelo próprio usuário (tela de
+// Solicitação de Cadastros), sem dados de exemplo pré-carregados.
+const MATERIAIS_INICIAIS = [];
 
 // O acervo de Procedimentos começa vazio — cada Área/POP é criado pelo próprio usuário (manual ou
 // via Importação, aba Dados) em vez de vir com dados de exemplo pré-carregados.
