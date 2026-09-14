@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.21.2";
+const VERSAO_APP = "1.22.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1778,12 +1778,24 @@ function TelaListaMestraPops({ dados }) {
 function TelaPendenciasPops({ dados, setDados, usuario }) {
   const [enviando, setEnviando] = useState(null); // `${popId}-${rev}` sendo enviado, ou null
   const [iniciando, setIniciando] = useState(null); // id do POP tendo a revisão iniciada, ou null
+  const [busca, setBusca] = useState("");
+  const [fArea, setFArea] = useState("");
+  const [fStatus, setFStatus] = useState("");
 
   const cfg = dados.popsConfig || POPS_CONFIG_INICIAL;
-  // Vencido = status efetivo VENCIDO (validade já passou) — aparece aqui pra o Auditor poder iniciar
-  // a revisão direto desta tela, sem precisar procurar o POP em Procedimentos.
-  const vencidos = (dados.pops || []).filter((p) => statusEfetivoPop(p, cfg) === "VENCIDO");
-  const aRevisar = (dados.pops || []).filter((p) => statusEfetivoPop(p, cfg) === "NECESSARIO_REVISAR");
+  const areas = dados.popsAreas || [];
+  // Vencido/Revisar num grupo só (status efetivo por validade) — aparece aqui pra o Auditor poder
+  // iniciar a revisão direto desta tela, sem precisar procurar o POP em Procedimentos. Mais urgente
+  // primeiro (vencido há mais tempo / vence mais perto).
+  const pendenciasStatus = (dados.pops || [])
+    .map((pop) => ({ pop, statusEfetivo: statusEfetivoPop(pop, cfg) }))
+    .filter((x) => x.statusEfetivo === "VENCIDO" || x.statusEfetivo === "NECESSARIO_REVISAR")
+    .sort((a, b) => popsDiasParaVencer(a.pop.validade) - popsDiasParaVencer(b.pop.validade));
+  const qBusca = busca.toLowerCase().trim();
+  const pendenciasStatusFiltradas = pendenciasStatus.filter(({ pop, statusEfetivo }) =>
+    (!qBusca || `${pop.codigo} ${pop.titulo}`.toLowerCase().includes(qBusca)) &&
+    (!fArea || pop.area === fArea) &&
+    (!fStatus || statusEfetivo === fStatus));
 
   const pendenciasArquivo = [];
   (dados.pops || []).forEach((pop) => {
@@ -1834,7 +1846,7 @@ function TelaPendenciasPops({ dados, setDados, usuario }) {
     }
   };
 
-  if (pendenciasArquivo.length === 0 && vencidos.length === 0 && aRevisar.length === 0) {
+  if (pendenciasArquivo.length === 0 && pendenciasStatus.length === 0) {
     return (
       <Cartao style={{ maxWidth: 560, margin: "24px auto", textAlign: "center", padding: "40px 32px", borderTop: "4px solid #0f6b3f" }}>
         <div style={{ fontSize: 44 }}>✅</div>
@@ -1848,58 +1860,45 @@ function TelaPendenciasPops({ dados, setDados, usuario }) {
     <div>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Pendências</h2>
 
-      {vencidos.length > 0 && (
+      {pendenciasStatus.length > 0 && (
         <>
-          <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 10px" }}>{vencidos.length} procedimento(s) vencido(s) — a validade já passou, inicie a revisão.</p>
+          <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 10px" }}>{pendenciasStatus.length} procedimento(s) vencido(s) ou a revisar. Inicie a revisão direto daqui.</p>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+            <input style={{ ...inputStyle, minWidth: 220, width: "auto" }} placeholder="🔎 Buscar por código ou título…" value={busca} onChange={(e) => setBusca(e.target.value)} />
+            <select style={{ ...inputStyle, width: "auto" }} value={fArea} onChange={(e) => setFArea(e.target.value)}>
+              <option value="">Todas as áreas</option>
+              {areas.map((a) => <option key={a.id} value={a.pastaNorm}>{a.pastaNorm}</option>)}
+            </select>
+            <select style={{ ...inputStyle, width: "auto" }} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+              <option value="">Todos os status</option>
+              <option value="VENCIDO">{STATUS_POPS.VENCIDO}</option>
+              <option value="NECESSARIO_REVISAR">{STATUS_POPS.NECESSARIO_REVISAR}</option>
+            </select>
+            {(busca || fArea || fStatus) && <Botao tipo="contorno" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => { setBusca(""); setFArea(""); setFStatus(""); }}>Limpar filtros</Botao>}
+          </div>
           <Cartao style={{ padding: 0, overflow: "auto", marginBottom: 20 }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 620 }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 680 }}>
               <thead><tr>
-                {["Código / Área", "Título", "Validade", ""].map((h) => (
+                {["Código / Área", "Título", "Validade", "Status", ""].map((h) => (
                   <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
                 ))}
               </tr></thead>
               <tbody>
-                {vencidos.map((pop) => {
+                {pendenciasStatusFiltradas.map(({ pop, statusEfetivo }) => {
                   const emInicio = iniciando === pop.id;
                   const dias = popsDiasParaVencer(pop.validade);
+                  const vencido = statusEfetivo === "VENCIDO";
                   return (
                     <tr key={pop.id}>
                       <td style={tdPops}><b>{pop.codigo}</b><br /><span style={{ fontSize: 11.5, color: CORES.cinza }}>{pop.area}</span></td>
                       <td style={tdPops}>{pop.titulo}</td>
-                      <td style={tdPops}>{formatarDataBR(pop.validade)}<br /><span style={{ fontSize: 11, color: "#990000" }}>vencido há {Math.abs(dias)}d</span></td>
-                      <td style={tdPops}><Botao tipo="perigo" style={{ padding: "5px 12px", fontSize: 12.5 }} disabled={emInicio} onClick={() => iniciarRevisao(pop)}>{emInicio ? "Iniciando…" : "Iniciar revisão"}</Botao></td>
+                      <td style={tdPops}>{formatarDataBR(pop.validade)}<br /><span style={{ fontSize: 11, color: vencido ? "#990000" : CORES.laranja }}>{vencido ? `vencido há ${Math.abs(dias)}d` : `vence em ${dias}d`}</span></td>
+                      <td style={tdPops}><span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[statusEfetivo] }}>{STATUS_POPS[statusEfetivo]}</span></td>
+                      <td style={tdPops}><Botao tipo={vencido ? "perigo" : "laranja"} style={{ padding: "5px 12px", fontSize: 12.5 }} disabled={emInicio} onClick={() => iniciarRevisao(pop)}>{emInicio ? "Iniciando…" : "Iniciar revisão"}</Botao></td>
                     </tr>
                   );
                 })}
-              </tbody>
-            </table>
-          </Cartao>
-        </>
-      )}
-
-      {aRevisar.length > 0 && (
-        <>
-          <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 10px" }}>{aRevisar.length} procedimento(s) a revisar — faltam 45 dias ou menos para o vencimento.</p>
-          <Cartao style={{ padding: 0, overflow: "auto", marginBottom: 20 }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 620 }}>
-              <thead><tr>
-                {["Código / Área", "Título", "Validade", ""].map((h) => (
-                  <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
-                ))}
-              </tr></thead>
-              <tbody>
-                {aRevisar.map((pop) => {
-                  const emInicio = iniciando === pop.id;
-                  const dias = popsDiasParaVencer(pop.validade);
-                  return (
-                    <tr key={pop.id}>
-                      <td style={tdPops}><b>{pop.codigo}</b><br /><span style={{ fontSize: 11.5, color: CORES.cinza }}>{pop.area}</span></td>
-                      <td style={tdPops}>{pop.titulo}</td>
-                      <td style={tdPops}>{formatarDataBR(pop.validade)}<br /><span style={{ fontSize: 11, color: CORES.laranja }}>vence em {dias}d</span></td>
-                      <td style={tdPops}><Botao tipo="laranja" style={{ padding: "5px 12px", fontSize: 12.5 }} disabled={emInicio} onClick={() => iniciarRevisao(pop)}>{emInicio ? "Iniciando…" : "Iniciar revisão"}</Botao></td>
-                    </tr>
-                  );
-                })}
+                {pendenciasStatusFiltradas.length === 0 && <tr><td colSpan={5} style={{ ...tdPops, textAlign: "center", color: CORES.cinza }}>Nenhum resultado com os filtros aplicados.</td></tr>}
               </tbody>
             </table>
           </Cartao>
