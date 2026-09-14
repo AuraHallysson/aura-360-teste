@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.22.0";
+const VERSAO_APP = "1.22.1";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -1706,17 +1706,20 @@ function TelaListaMestraPops({ dados }) {
   const [fStatus, setFStatus] = useState("");
   const pops = dados.pops || [];
   const areas = dados.popsAreas || [];
+  const cfg = dados.popsConfig || POPS_CONFIG_INICIAL;
   const q = busca.toLowerCase().trim();
+  // Mesma regra de status EFETIVO (Vencido/Revisar por validade) usada em Procedimentos — a Lista
+  // Mestra precisa refletir o mesmo status que aparece lá, não o campo bruto.
   const lista = pops.filter((p) =>
     (!q || `${p.codigo} ${p.titulo}`.toLowerCase().includes(q)) &&
     (!fArea || p.area === fArea) &&
-    (!fStatus || p.status === fStatus));
-  const statusPresentes = [...new Set(pops.map((p) => p.status))];
+    (!fStatus || statusEfetivoPop(p, cfg) === fStatus));
+  const statusPresentes = [...new Set(pops.map((p) => statusEfetivoPop(p, cfg)))];
 
   const exportarExcel = () => {
     const linhas = lista.map((p) => ({
       "Código": p.codigo, "Título": p.titulo, "Área": p.area, "Revisão": `Rev ${String(p.revisaoAtual ?? 0).padStart(2, "0")}`,
-      "Data Revisão": p.dataRevisao || "", "Validade": p.validade ? formatarDataBR(p.validade) : "", "Status": STATUS_POPS[p.status] || p.status,
+      "Data Revisão": p.dataRevisao || "", "Validade": p.validade ? formatarDataBR(p.validade) : "", "Status": STATUS_POPS[statusEfetivoPop(p, cfg)] || p.status,
       "Singular": p.singularUpload ? "Sim" : "Não",
     }));
     const wb = XLSX.utils.book_new();
@@ -1749,7 +1752,9 @@ function TelaListaMestraPops({ dados }) {
             ))}
           </tr></thead>
           <tbody>
-            {lista.map((p) => (
+            {lista.map((p) => {
+              const statusEfetivo = statusEfetivoPop(p, cfg);
+              return (
               <tr key={p.id}>
                 <td style={tdPops}><b>{p.codigo}</b></td>
                 <td style={tdPops}>{p.titulo}</td>
@@ -1757,10 +1762,11 @@ function TelaListaMestraPops({ dados }) {
                 <td style={tdPops}>Rev {String(p.revisaoAtual ?? 0).padStart(2, "0")}</td>
                 <td style={tdPops}>{p.dataRevisao || "—"}</td>
                 <td style={tdPops}>{p.validade ? formatarDataBR(p.validade) : "—"}</td>
-                <td style={tdPops}><span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[p.status] || CORES.azul }}>{STATUS_POPS[p.status] || p.status}</span></td>
+                <td style={tdPops}><span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[statusEfetivo] || CORES.azul }}>{STATUS_POPS[statusEfetivo] || statusEfetivo}</span></td>
                 <td style={tdPops}>{p.singularUpload ? <span style={{ color: "#0f6b3f" }}>Sim</span> : <span style={{ color: CORES.cinza }}>Não</span>}</td>
               </tr>
-            ))}
+              );
+            })}
             {lista.length === 0 && <tr><td colSpan={8} style={{ ...tdPops, textAlign: "center", color: CORES.cinza }}>Nenhum procedimento encontrado com os filtros.</td></tr>}
           </tbody>
         </table>
