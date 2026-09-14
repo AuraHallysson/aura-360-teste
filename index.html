@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.20.1";
+const VERSAO_APP = "1.21.0";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -882,12 +882,25 @@ function TelaPainelCompras({ dados, souAdmin }) {
    -[aprova]-> APROVADO -[confirma]-> AGUARDANDO_APROVACAO_SSMA -[SSMA conclui]-> CONCLUIDO.
    Reprovações (avaliador ou SSMA) devolvem para EM_REVISAO. Regra SOX: avaliador ≠ auditor da revisão.
    ============================================================ */
-const STATUS_POPS = { PUBLICADO: "Publicado", EM_REVISAO: "Em Revisão", AGUARDANDO_AVALIACAO: "Aguardando Avaliação", APROVADO: "Aprovado", AGUARDANDO_APROVACAO_SSMA: "Aguardando Aprovação do SSMA", CONCLUIDO: "Concluído" };
-const COR_STATUS_POPS = { PUBLICADO: "#2D3D70", EM_REVISAO: "#F4614D", AGUARDANDO_AVALIACAO: "#b8860b", APROVADO: "#7C93C7", AGUARDANDO_APROVACAO_SSMA: "#E8862E", CONCLUIDO: "#22305c" };
+const STATUS_POPS = { PUBLICADO: "Publicado", EM_REVISAO: "Em Revisão", AGUARDANDO_AVALIACAO: "Aguardando Avaliação", APROVADO: "Aprovado", AGUARDANDO_APROVACAO_SSMA: "Aguardando Aprovação do SSMA", CONCLUIDO: "Concluído", VENCIDO: "Vencido", NECESSARIO_REVISAR: "Necessário Revisar" };
+const COR_STATUS_POPS = { PUBLICADO: "#2D3D70", EM_REVISAO: "#F4614D", AGUARDANDO_AVALIACAO: "#b8860b", APROVADO: "#7C93C7", AGUARDANDO_APROVACAO_SSMA: "#E8862E", CONCLUIDO: "#22305c", VENCIDO: "#990000", NECESSARIO_REVISAR: CORES.laranja };
 function popsHojeBR() { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`; }
 function popsHojeIso() { return new Date().toISOString().slice(0, 10); }
 function popsAddDias(iso, dias) { return new Date(new Date(iso).getTime() + dias * 86400000).toISOString().slice(0, 10); }
 function popsDiasParaVencer(validade) { return validade ? Math.ceil((new Date(validade) - new Date(popsHojeIso())) / 86400000) : null; }
+// Status "efetivo" pra exibição — só se aplica a POP "em repouso" (Publicado/Concluído): um POP já
+// em alguma etapa do fluxo de revisão mantém o próprio status (não faz sentido sobrepor
+// Vencido/Necessário Revisar a algo que já está sendo tratado). Regra: vencido (dias < 0) →
+// VENCIDO; dentro da janela configurada em Parâmetros (padrão 45 dias) → NECESSARIO_REVISAR; do
+// contrário, mantém o status normal (Publicado/Concluído = "válido").
+function statusEfetivoPop(pop, cfg) {
+  if (!["PUBLICADO", "CONCLUIDO"].includes(pop.status) || !pop.validade) return pop.status;
+  const dias = popsDiasParaVencer(pop.validade);
+  const janela = cfg?.pendenteRevisaoDias || 45;
+  if (dias < 0) return "VENCIDO";
+  if (dias <= janela) return "NECESSARIO_REVISAR";
+  return pop.status;
+}
 const tdPops = { padding: "8px 10px", borderBottom: `1px solid ${CORES.cinzaClaro}`, fontSize: 13, color: CORES.azul, verticalAlign: "top" };
 
 // Gráficos simples em SVG (sem biblioteca externa) — donut e barras, usados no Painel
@@ -1266,7 +1279,7 @@ function ModalProcedimentoPops({ pop, dados, usuario, atualizarPop, removerPop, 
         <h3 style={{ margin: "0 0 2px", color: CORES.azul }}>{pop.codigo}</h3>
         <div style={{ color: CORES.cinza, fontSize: 13 }}>{pop.titulo} · {pop.area}</div>
         <div style={{ margin: "10px 0" }}>
-          <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 10, fontSize: 12, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[pop.status] || CORES.azul }}>{STATUS_POPS[pop.status] || pop.status}</span>
+          <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 10, fontSize: 12, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[statusEfetivoPop(pop, dados.popsConfig)] || CORES.azul }}>{STATUS_POPS[statusEfetivoPop(pop, dados.popsConfig)] || pop.status}</span>
           <span style={{ fontSize: 13, color: CORES.azul, marginLeft: 10 }}>Rev <b>{String(pop.revisaoAtual ?? 0).padStart(2, "0")}</b> · {pop.dataRevisao || "—"} · Validade: <b>{pop.validade ? formatarDataBR(pop.validade) : "—"}</b></span>
         </div>
 
@@ -1515,12 +1528,15 @@ function TelaProcedimentosPops({ dados, setDados, usuario }) {
 
   const pops = dados.pops || [];
   const areas = dados.popsAreas || [];
+  const cfg = dados.popsConfig || POPS_CONFIG_INICIAL;
   const q = busca.toLowerCase().trim();
+  // Filtro e coluna Status usam o status EFETIVO (Vencido/Necessário Revisar por data de validade),
+  // não o campo bruto — assim filtrar por "Publicado" não mistura POPs já vencidos/a vencer nele.
   const lista = pops.filter((p) =>
     (!q || `${p.codigo} ${p.titulo}`.toLowerCase().includes(q)) &&
     (!fArea || p.area === fArea) &&
-    (!fStatus || p.status === fStatus));
-  const statusPresentes = [...new Set(pops.map((p) => p.status))];
+    (!fStatus || statusEfetivoPop(p, cfg) === fStatus));
+  const statusPresentes = [...new Set(pops.map((p) => statusEfetivoPop(p, cfg)))];
   // Só quem edita Procedimentos (Administrador/Auditor) pode cadastrar um novo — mesma capacidade
   // usada em "Iniciar revisão" dentro do modal de detalhe.
   const possoCriar = capacidadePops(usuario, PAPEL_POPS_PROCEDIMENTOS, dados) === "editar";
@@ -1580,13 +1596,14 @@ function TelaProcedimentosPops({ dados, setDados, usuario }) {
           <tbody>
             {lista.map((p) => {
               const dias = popsDiasParaVencer(p.validade);
+              const statusEfetivo = statusEfetivoPop(p, cfg);
               return (
                 <tr key={p.id}>
                   <td style={tdPops}><b>{p.codigo}</b><br /><span style={{ color: CORES.cinza, fontSize: 11.5 }}>{p.area}</span></td>
                   <td style={tdPops}>{p.titulo}</td>
                   <td style={tdPops}>Rev {String(p.revisaoAtual ?? 0).padStart(2, "0")}<br /><span style={{ color: CORES.cinza, fontSize: 11.5 }}>{p.dataRevisao || "—"}</span></td>
                   <td style={tdPops}>{p.validade ? <>{formatarDataBR(p.validade)}<br /><span style={{ fontSize: 11, color: dias < 0 || dias <= 30 ? "#990000" : dias <= 60 ? CORES.laranja : "#0f6b3f" }}>{dias < 0 ? "vencido" : dias + "d"}</span></> : "—"}</td>
-                  <td style={tdPops}><span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[p.status] || CORES.azul }}>{STATUS_POPS[p.status] || p.status}</span></td>
+                  <td style={tdPops}><span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#fff", background: COR_STATUS_POPS[statusEfetivo] || CORES.azul }}>{STATUS_POPS[statusEfetivo] || statusEfetivo}</span></td>
                   <td style={tdPops}><Botao tipo="contorno" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setPopAberto(p.id)}>Abrir</Botao></td>
                 </tr>
               );
@@ -1760,6 +1777,12 @@ function TelaListaMestraPops({ dados }) {
 // dentro da tela, não é preciso checar capacidade de novo: quem chega aqui já pode editar.
 function TelaPendenciasPops({ dados, setDados, usuario }) {
   const [enviando, setEnviando] = useState(null); // `${popId}-${rev}` sendo enviado, ou null
+  const [iniciando, setIniciando] = useState(null); // id do POP tendo a revisão iniciada, ou null
+
+  const cfg = dados.popsConfig || POPS_CONFIG_INICIAL;
+  // Vencido = status efetivo VENCIDO (validade já passou) — aparece aqui pra o Auditor poder iniciar
+  // a revisão direto desta tela, sem precisar procurar o POP em Procedimentos.
+  const vencidos = (dados.pops || []).filter((p) => statusEfetivoPop(p, cfg) === "VENCIDO");
 
   const pendenciasArquivo = [];
   (dados.pops || []).forEach((pop) => {
@@ -1767,6 +1790,27 @@ function TelaPendenciasPops({ dados, setDados, usuario }) {
       if (!(h.arquivo?.dataUrl || h.arquivo?.url)) pendenciasArquivo.push({ pop, h });
     });
   });
+
+  // Mesma mutação de "Iniciar revisão" do modal de detalhe do POP, só que disparável direto daqui.
+  const iniciarRevisao = async (pop) => {
+    setIniciando(pop.id);
+    try {
+      const popsAtual = (dados.pops || []).map((p) => p.id !== pop.id ? p : {
+        ...p, statusAntesRevisao: p.status, status: "EM_REVISAO", auditorEmail: usuario.email,
+        revisaoEmAndamento: (p.revisaoAtual || 0) + 1, avaliadorEmail: null, avaliacao: null, descricaoPendente: null,
+        singularUpload: false, singularEm: null, singularPorNome: null, ssmaEnviadoEm: null,
+        trabalhoAnexo: null, trabalhoEnviado: false, trabalhoEnviadoEm: null, bloqueadoEdicao: false, avaliacaoSSMA: null,
+      });
+      let nd = { ...dados, pops: popsAtual };
+      nd = comLog(nd, usuario, "Procedimentos", "Iniciou revisão (a partir de Pendências)", `${pop.codigo} — Rev ${String((pop.revisaoAtual || 0) + 1).padStart(2, "0")}`, pop.id);
+      setDados(nd); await salvarDados(nd);
+      avisar(`Revisão de ${pop.codigo} iniciada.`);
+    } catch (e) {
+      avisar("Não foi possível iniciar a revisão: " + (e.message || String(e)));
+    } finally {
+      setIniciando(null);
+    }
+  };
 
   const enviarArquivoRevisao = async (pop, h, file) => {
     if (!/\.docx$/i.test(file.name)) { avisar('Só é possível enviar um arquivo ".docx".'); return; }
@@ -1789,12 +1833,12 @@ function TelaPendenciasPops({ dados, setDados, usuario }) {
     }
   };
 
-  if (pendenciasArquivo.length === 0) {
+  if (pendenciasArquivo.length === 0 && vencidos.length === 0) {
     return (
       <Cartao style={{ maxWidth: 560, margin: "24px auto", textAlign: "center", padding: "40px 32px", borderTop: "4px solid #0f6b3f" }}>
         <div style={{ fontSize: 44 }}>✅</div>
         <h2 style={{ color: CORES.azul, margin: "10px 0 6px" }}>Pendências</h2>
-        <p style={{ color: CORES.cinza, fontSize: 14, margin: 0 }}>Nenhuma pendência no momento — todas as revisões têm arquivo carregado no sistema.</p>
+        <p style={{ color: CORES.cinza, fontSize: 14, margin: 0 }}>Nenhuma pendência no momento — nenhum POP vencido e todas as revisões têm arquivo carregado no sistema.</p>
       </Cartao>
     );
   }
@@ -1802,40 +1846,74 @@ function TelaPendenciasPops({ dados, setDados, usuario }) {
   return (
     <div>
       <h2 style={{ margin: "0 0 4px", color: CORES.azul }}>Pendências</h2>
-      <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>{pendenciasArquivo.length} revisão(ões) sem arquivo original carregado no sistema. Envie o .docx correspondente a cada uma.</p>
-      <Cartao style={{ padding: 0, overflow: "auto" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 680 }}>
-          <thead><tr>
-            {["Código / Área", "Título", "Rev.", "Data", "Descrição", ""].map((h) => (
-              <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
-            ))}
-          </tr></thead>
-          <tbody>
-            {pendenciasArquivo.map(({ pop, h }) => {
-              const chave = `${pop.id}-${h.rev}`;
-              const emEnvio = enviando === chave;
-              return (
-                <tr key={chave}>
-                  <td style={tdPops}><b>{pop.codigo}</b><br /><span style={{ fontSize: 11.5, color: CORES.cinza }}>{pop.area}</span></td>
-                  <td style={tdPops}>{pop.titulo}</td>
-                  <td style={tdPops}>{String(h.rev).padStart(2, "0")}</td>
-                  <td style={tdPops}>{h.data}</td>
-                  <td style={tdPops}>{h.descricao}</td>
-                  <td style={tdPops}>
-                    <label style={{ display: "inline-block", cursor: emEnvio ? "wait" : "pointer" }}>
-                      <Botao tipo="contorno" style={{ pointerEvents: "none", padding: "5px 12px", fontSize: 12.5 }} disabled={emEnvio}>
-                        {emEnvio ? "Enviando…" : "⬆ Enviar arquivo (.docx)"}
-                      </Botao>
-                      <input type="file" accept=".docx" style={{ display: "none" }} disabled={emEnvio}
-                        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) enviarArquivoRevisao(pop, h, f); }} />
-                    </label>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </Cartao>
+
+      {vencidos.length > 0 && (
+        <>
+          <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 10px" }}>{vencidos.length} procedimento(s) vencido(s) — a validade já passou, inicie a revisão.</p>
+          <Cartao style={{ padding: 0, overflow: "auto", marginBottom: 20 }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 620 }}>
+              <thead><tr>
+                {["Código / Área", "Título", "Validade", ""].map((h) => (
+                  <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {vencidos.map((pop) => {
+                  const emInicio = iniciando === pop.id;
+                  const dias = popsDiasParaVencer(pop.validade);
+                  return (
+                    <tr key={pop.id}>
+                      <td style={tdPops}><b>{pop.codigo}</b><br /><span style={{ fontSize: 11.5, color: CORES.cinza }}>{pop.area}</span></td>
+                      <td style={tdPops}>{pop.titulo}</td>
+                      <td style={tdPops}>{formatarDataBR(pop.validade)}<br /><span style={{ fontSize: 11, color: "#990000" }}>vencido há {Math.abs(dias)}d</span></td>
+                      <td style={tdPops}><Botao tipo="perigo" style={{ padding: "5px 12px", fontSize: 12.5 }} disabled={emInicio} onClick={() => iniciarRevisao(pop)}>{emInicio ? "Iniciando…" : "Iniciar revisão"}</Botao></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Cartao>
+        </>
+      )}
+
+      {pendenciasArquivo.length > 0 && (
+        <>
+          <p style={{ fontSize: 13, color: CORES.cinza, margin: "0 0 16px" }}>{pendenciasArquivo.length} revisão(ões) sem arquivo original carregado no sistema. Envie o .docx correspondente a cada uma.</p>
+          <Cartao style={{ padding: 0, overflow: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 680 }}>
+              <thead><tr>
+                {["Código / Área", "Título", "Rev.", "Data", "Descrição", ""].map((h) => (
+                  <th key={h} style={{ padding: "8px 10px", fontSize: 11, textTransform: "uppercase", color: "#fff", background: CORES.azul, textAlign: "left" }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {pendenciasArquivo.map(({ pop, h }) => {
+                  const chave = `${pop.id}-${h.rev}`;
+                  const emEnvio = enviando === chave;
+                  return (
+                    <tr key={chave}>
+                      <td style={tdPops}><b>{pop.codigo}</b><br /><span style={{ fontSize: 11.5, color: CORES.cinza }}>{pop.area}</span></td>
+                      <td style={tdPops}>{pop.titulo}</td>
+                      <td style={tdPops}>{String(h.rev).padStart(2, "0")}</td>
+                      <td style={tdPops}>{h.data}</td>
+                      <td style={tdPops}>{h.descricao}</td>
+                      <td style={tdPops}>
+                        <label style={{ display: "inline-block", cursor: emEnvio ? "wait" : "pointer" }}>
+                          <Botao tipo="contorno" style={{ pointerEvents: "none", padding: "5px 12px", fontSize: 12.5 }} disabled={emEnvio}>
+                            {emEnvio ? "Enviando…" : "⬆ Enviar arquivo (.docx)"}
+                          </Botao>
+                          <input type="file" accept=".docx" style={{ display: "none" }} disabled={emEnvio}
+                            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) enviarArquivoRevisao(pop, h, f); }} />
+                        </label>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Cartao>
+        </>
+      )}
     </div>
   );
 }
