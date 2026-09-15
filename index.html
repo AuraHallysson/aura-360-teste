@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.23.0";
+const VERSAO_APP = "1.24.0";
 const VERSAO_DATA = "2026-09-15"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -457,6 +457,7 @@ const dadosVazios = () => ({
   popsAreas: AREAS_POPS_INICIAIS,
   popsConfig: POPS_CONFIG_INICIAL,
   importacoesPops: [], // log de importações feitas na aba Dados → Importação de Procedimentos
+  solicitacoesCadastro: [], // pedidos de acesso feitos na tela de login, antes de existir usuário/senha
 });
 
 /* ---------------- Trilha de auditoria (SOX) ----------------
@@ -499,6 +500,7 @@ async function carregarDados() {
       if (!Array.isArray(d.popsAreas)) d.popsAreas = AREAS_POPS_INICIAIS;
       if (!d.popsConfig) d.popsConfig = POPS_CONFIG_INICIAL;
       if (!Array.isArray(d.importacoesPops)) d.importacoesPops = [];
+      if (!Array.isArray(d.solicitacoesCadastro)) d.solicitacoesCadastro = [];
       // Limpeza única (2026-09-11): navegadores que já tinham aberto o app antes de
       // POPS_INICIAIS/AREAS_POPS_INICIAIS/MATERIAIS_INICIAIS serem esvaziados continuavam vendo o
       // acervo de exemplo — os "if (!Array.isArray(...))" acima só preenchem quando o campo nem
@@ -4240,7 +4242,7 @@ function TelaConfigCompras({ dados, setDados, usuario }) {
   );
 }
 
-function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
+function TelaConfig({ dados, setDados, usuario, aba, setAba, aprovarCadastro, reprovarCadastro }) {
   const ehGM = usuario.perfil === "GM";
   const subsistemasQueAdministro = subsistemasAdministradosPor(usuario);
   if (!ehGM && subsistemasQueAdministro.length === 0) {
@@ -4427,6 +4429,34 @@ function TelaConfig({ dados, setDados, usuario, aba, setAba }) {
         delegados, restritos ao(s) Subsistema(s) marcados em "Administrador") e <strong>GM</strong> (administrador geral, acesso total).
         As senhas são armazenadas apenas como hash criptográfico — nem os administradores conseguem visualizá-las.
       </p>
+
+      {/* Solicitações de cadastro feitas na tela de login (Home) — só GM aprova/reprova; um
+          administrador de Subsistema nem chega a ver este painel (aba restrita a ehGM acima). */}
+      {(dados.solicitacoesCadastro || []).filter((s) => s.status === "PENDENTE").length > 0 && (
+        <div style={{ background: "rgba(244,97,77,.08)", border: `1px solid ${CORES.laranja}`, borderRadius: 10, padding: 16, marginBottom: 20 }}>
+          <strong style={{ color: CORES.laranja, fontSize: 13, textTransform: "uppercase", letterSpacing: ".05em" }}>
+            Solicitações de cadastro pendentes ({dados.solicitacoesCadastro.filter((s) => s.status === "PENDENTE").length})
+          </strong>
+          <p style={{ fontSize: 11.5, color: CORES.cinza, margin: "6px 0 10px" }}>
+            Pedidos enviados pela tela de login. Somente um Administrador (GM) pode aprovar ou reprovar.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {dados.solicitacoesCadastro.filter((s) => s.status === "PENDENTE").map((s) => (
+              <div key={s.id} style={{ background: "#fff", borderRadius: 8, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 13, color: CORES.azul }}>
+                  <strong>{s.nome}</strong> — {s.email}
+                  {s.mensagem && <div style={{ fontSize: 12, color: CORES.cinza, marginTop: 2 }}>{s.mensagem}</div>}
+                  <div style={{ fontSize: 11, color: CORES.cinza, marginTop: 2 }}>Solicitado em {s.dataHora}</div>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <Botao style={{ padding: "5px 12px", fontSize: 12.5 }} onClick={() => aprovarCadastro(s.id)}>Aprovar</Botao>
+                  <Botao tipo="perigo" style={{ padding: "5px 12px", fontSize: 12.5 }} onClick={() => reprovarCadastro(s.id)}>Reprovar</Botao>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Cadastro de novo usuário */}
       <div style={{ background: CORES.cinzaClaro, borderRadius: 10, padding: 16, marginBottom: 20 }}>
@@ -4761,6 +4791,57 @@ Nova etapa: ${etapa}
 ${detalhes ? detalhes + "\n" : ""}Registrado por: ${registradoPor}
 
 Consulte os detalhes na tela de Relatórios do sistema.${RODAPE_EMAIL}`,
+});
+
+const RODAPE_EMAIL_ACESSO = "\n\n—\nSistema AURA 360° Planta — Aura Minerals\nMensagem automática do sistema; não responda a este e-mail.";
+
+const tplConfirmacaoSolicitacaoCadastro = (nome, dataHora) => ({
+  assunto: "[AURA 360° Planta] Recebemos sua solicitação de cadastro",
+  corpo:
+`Olá, ${nome.split(" ")[0]}.
+
+Sua solicitação de cadastro no AURA 360° Planta foi registrada com sucesso em ${dataHora} e aguarda a análise de um Administrador (GM) do sistema.
+
+Você receberá um novo e-mail assim que sua solicitação for aprovada ou reprovada.${RODAPE_EMAIL_ACESSO}`,
+});
+
+const tplAlertaAdminSolicitacaoCadastro = (nome, email, mensagem, dataHora) => ({
+  assunto: `[AURA 360° Planta] Nova solicitação de cadastro — ${nome}`,
+  corpo:
+`Olá, Administrador.
+
+Uma nova solicitação de cadastro no sistema foi registrada e aguarda sua análise.
+
+Nome: ${nome}
+E-mail: ${email}
+${mensagem ? `Área / Motivo: ${mensagem}\n` : ""}Data/Hora: ${dataHora}
+
+Acesse Configurações → Usuários para aprovar ou reprovar. Somente Administradores (GM) podem decidir sobre solicitações de cadastro.${RODAPE_EMAIL_ACESSO}`,
+});
+
+const tplDecisaoCadastro = (nome, aprovado, motivo) => ({
+  assunto: aprovado ? "[AURA 360° Planta] Seu cadastro foi aprovado" : "[AURA 360° Planta] Sua solicitação de cadastro não foi aprovada",
+  corpo: aprovado
+    ?
+`Olá, ${nome.split(" ")[0]}.
+
+Seu cadastro no AURA 360° Planta foi aprovado por um Administrador do sistema. Acesse a tela de login com seu e-mail corporativo e clique em Entrar para criar sua senha pessoal.${RODAPE_EMAIL_ACESSO}`
+    :
+`Olá, ${nome.split(" ")[0]}.
+
+Sua solicitação de cadastro no AURA 360° Planta não foi aprovada.
+${motivo ? `\nMotivo: ${motivo}\n` : ""}
+Em caso de dúvidas, contate um Administrador do sistema.${RODAPE_EMAIL_ACESSO}`,
+});
+
+const tplAlertaAdminSenha = (email, dataHora) => ({
+  assunto: `[AURA 360° Planta] Redefinição de senha solicitada — ${email}`,
+  corpo:
+`Olá, Administrador.
+
+O e-mail ${email} solicitou a redefinição da própria senha em ${dataHora}.
+
+Acesse Configurações → Usuários e use "Redefinir senha" para esse e-mail. Somente Administradores (GM) têm essa opção.${RODAPE_EMAIL_ACESSO}`,
 });
 
 const linkMailto = (m) =>
@@ -5138,13 +5219,22 @@ function TrilhaNavegacao({ segmentos }) {
   );
 }
 
-function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroAdmin }) {
+function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroAdmin, mostrarPrimeiroAcesso, solicitarCadastro, solicitarRedefinicaoSenha }) {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
   const [senha2, setSenha2] = useState("");
-  const [fase, setFase] = useState("login"); // "login" | "criarSenha"
+  const [fase, setFase] = useState("login"); // "login" | "criarSenha" | "solicitarCadastro" | "esqueciSenha"
   const [erro, setErro] = useState("");
+  const [sucesso, setSucesso] = useState("");
   const [carregando, setCarregando] = useState(false);
+  const [nomeSolic, setNomeSolic] = useState("");
+  const [emailSolic, setEmailSolic] = useState("");
+  const [mensagemSolic, setMensagemSolic] = useState("");
+  const [emailEsqueci, setEmailEsqueci] = useState("");
+
+  const linkStyle = { border: "none", background: "none", color: CORES.cinza, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", padding: 0 };
+
+  const irPara = (novaFase) => { setFase(novaFase); setErro(""); setSucesso(""); };
 
   // ---- Login: e-mail cadastrado pelo administrador + senha ----
   const entrarDemo = async () => {
@@ -5165,6 +5255,27 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
     const r = await criarSenhaELogar(email.trim().toLowerCase(), senha);
     setCarregando(false);
     if (r && r.erro) setErro(r.erro);
+  };
+
+  // ---- Solicitar cadastro: qualquer pessoa sem acesso pode pedir — só um GM aprova ----
+  const enviarSolicitacaoCadastro = async () => {
+    setErro("");
+    setCarregando(true);
+    const r = await solicitarCadastro({ nome: nomeSolic, email: emailSolic, mensagem: mensagemSolic });
+    setCarregando(false);
+    if (r && r.erro) { setErro(r.erro); return; }
+    setSucesso("Solicitação enviada. Um Administrador (GM) do sistema vai analisar e você receberá um e-mail com o resultado.");
+    setNomeSolic(""); setEmailSolic(""); setMensagemSolic("");
+  };
+
+  // ---- Esqueci minha senha: quem já tem cadastro pede a um GM para redefinir ----
+  const enviarEsqueciSenha = async () => {
+    setErro("");
+    setCarregando(true);
+    await solicitarRedefinicaoSenha(emailEsqueci);
+    setCarregando(false);
+    setSucesso("Se este e-mail estiver cadastrado no sistema, um Administrador (GM) foi notificado para redefinir a senha.");
+    setEmailEsqueci("");
   };
 
   return (
@@ -5194,20 +5305,21 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
               <Botao onClick={entrarDemo} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
                 {carregando ? "Verificando…" : "Entrar"}
               </Botao>
-              <p style={{ fontSize: 11.5, color: CORES.cinza, margin: 0, textAlign: "center" }}>
-                Sem acesso? Solicite seu cadastro a um administrador do sistema.
-              </p>
-              {resetPrimeiroAdmin && (
-                <button type="button" onClick={async () => {
-                  await resetPrimeiroAdmin();
-                  setEmail(PRIMEIRO_ADMIN); setSenha(""); setErro("");
-                  avisar("Senha do primeiro administrador redefinida. Clique em Entrar para criar uma nova senha.");
-                }} style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", padding: 0 }}>
-                  Primeiro administrador sem acesso? Redefinir minha senha
-                </button>
-              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center", marginTop: 4 }}>
+                <button type="button" onClick={() => irPara("solicitarCadastro")} style={linkStyle}>Sem acesso? Solicitar cadastro</button>
+                <button type="button" onClick={() => irPara("esqueciSenha")} style={linkStyle}>Já tem cadastro? Redefinir senha</button>
+                {mostrarPrimeiroAcesso && resetPrimeiroAdmin && (
+                  <button type="button" onClick={async () => {
+                    await resetPrimeiroAdmin();
+                    setEmail(PRIMEIRO_ADMIN); setSenha(""); setErro("");
+                    avisar("Primeiro acesso iniciado. Clique em Entrar para criar a senha do administrador.");
+                  }} style={linkStyle}>
+                    Primeiro acesso — cadastro inicial do administrador
+                  </button>
+                )}
+              </div>
             </div>
-          ) : (
+          ) : fase === "criarSenha" ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div style={{ fontSize: 13.5, color: CORES.azul, lineHeight: 1.5 }}>
                 <strong>Primeiro acesso de {email.trim().toLowerCase()}.</strong><br />
@@ -5226,6 +5338,48 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
               </Botao>
               <button onClick={() => { setFase("login"); setSenha(""); setSenha2(""); setErro(""); }}
                 style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>← Voltar</button>
+            </div>
+          ) : fase === "solicitarCadastro" ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ fontSize: 13.5, color: CORES.azul, lineHeight: 1.5 }}>
+                <strong>Solicitar cadastro</strong><br />
+                Informe seus dados. Um Administrador (GM) do sistema vai analisar sua solicitação.
+              </div>
+              <Campo label="Nome completo">
+                <input style={inputStyle} value={nomeSolic} onChange={(e) => { setNomeSolic(e.target.value); setErro(""); }} disabled={!!sucesso} />
+              </Campo>
+              <Campo label="E-mail corporativo">
+                <input style={inputStyle} value={emailSolic} onChange={(e) => { setEmailSolic(e.target.value); setErro(""); }} disabled={!!sucesso} />
+              </Campo>
+              <Campo label="Área / Motivo (opcional)">
+                <input style={inputStyle} value={mensagemSolic} onChange={(e) => setMensagemSolic(e.target.value)} disabled={!!sucesso} />
+              </Campo>
+              {erro && <p style={{ color: CORES.laranja, fontSize: 13, margin: 0 }}>{erro}</p>}
+              {sucesso && <p style={{ color: "seagreen", fontSize: 13, margin: 0 }}>{sucesso}</p>}
+              {!sucesso && (
+                <Botao onClick={enviarSolicitacaoCadastro} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
+                  {carregando ? "Enviando…" : "Enviar solicitação"}
+                </Botao>
+              )}
+              <button onClick={() => irPara("login")} style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>← Voltar</button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ fontSize: 13.5, color: CORES.azul, lineHeight: 1.5 }}>
+                <strong>Redefinir senha</strong><br />
+                Informe o e-mail já cadastrado no sistema. Um Administrador (GM) será notificado para redefinir sua senha.
+              </div>
+              <Campo label="E-mail corporativo">
+                <input style={inputStyle} value={emailEsqueci} onChange={(e) => setEmailEsqueci(e.target.value)} disabled={!!sucesso}
+                  onKeyDown={(e) => e.key === "Enter" && !sucesso && enviarEsqueciSenha()} />
+              </Campo>
+              {sucesso && <p style={{ color: "seagreen", fontSize: 13, margin: 0 }}>{sucesso}</p>}
+              {!sucesso && (
+                <Botao onClick={enviarEsqueciSenha} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
+                  {carregando ? "Enviando…" : "Enviar solicitação"}
+                </Botao>
+              )}
+              <button onClick={() => irPara("login")} style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>← Voltar</button>
             </div>
           )}
         </div>
@@ -5513,6 +5667,77 @@ function App() {
     setEmails({ resultados });
   };
 
+  // "Primeiro acesso" (bootstrap do primeiro administrador) só aparece na tela de login enquanto
+  // nenhum GM ainda tiver senha definida — depois disso, o caminho normal (Redefinir senha) já
+  // resolve qualquer perda de acesso, com outros GMs podendo ajudar.
+  const existeGmComSenha = (d) => Object.values(d.usuarios).some((u) => u.perfil === "GM" && u.senha);
+
+  // Solicitação de cadastro feita na tela de login (Home), antes de existir usuário no sistema.
+  // Só um Administrador (GM) pode aprovar/reprovar — ver painel em Configurações → Usuários.
+  const solicitarCadastro = async ({ nome, email, mensagem }) => {
+    const d0 = dados || dadosVazios();
+    const e = (email || "").trim().toLowerCase();
+    if (!nome || !nome.trim()) return { erro: "Informe seu nome." };
+    if (!e.endsWith(DOMINIO) || e.length <= DOMINIO.length) return { erro: `O e-mail deve pertencer ao domínio ${DOMINIO}.` };
+    if (d0.usuarios[e]) return { erro: "Este e-mail já possui cadastro no sistema." };
+    if ((d0.solicitacoesCadastro || []).some((s) => s.email === e && s.status === "PENDENTE")) {
+      return { erro: "Já existe uma solicitação de cadastro pendente para este e-mail." };
+    }
+    const dataHora = agoraStr();
+    const solicitacao = { id: uid(), nome: nome.trim(), email: e, mensagem: (mensagem || "").trim(), status: "PENDENTE", dataHora };
+    let nd = { ...d0, solicitacoesCadastro: [...(d0.solicitacoesCadastro || []), solicitacao] };
+    nd = comLog(nd, null, "Usuários", "Solicitou cadastro no sistema (tela de login)", `${solicitacao.nome} <${e}>`, e);
+    setDados(nd); await salvarDados(nd);
+    notificar([
+      { rotulo: "Confirmação ao solicitante", para: [e], ...tplConfirmacaoSolicitacaoCadastro(solicitacao.nome, dataHora) },
+      { rotulo: "Alerta aos administradores (Solicitação de cadastro)", para: listaAdmins(nd), ...tplAlertaAdminSolicitacaoCadastro(solicitacao.nome, e, solicitacao.mensagem, dataHora) },
+    ]);
+    return { ok: true };
+  };
+
+  // Aprovar/reprovar solicitação de cadastro: restrito a GM (só a aba de Configurações →
+  // Usuários que renderiza esse painel já é restrita a GM — ver TelaConfig).
+  const aprovarCadastro = async (id) => {
+    const s = (dados.solicitacoesCadastro || []).find((x) => x.id === id && x.status === "PENDENTE");
+    if (!s) return;
+    if (dados.usuarios[s.email]) { avisar("Este e-mail já possui cadastro no sistema."); return; }
+    let nd = {
+      ...dados,
+      usuarios: { ...dados.usuarios, [s.email]: { nome: s.nome, perfil: "Usuário Comum", ativo: true, permissoes: permissoesDefault() } },
+      solicitacoesCadastro: dados.solicitacoesCadastro.map((x) => (x.id === id ? { ...x, status: "APROVADA", decididoPor: usuario.email, dataDecisao: agoraStr() } : x)),
+    };
+    nd = comLog(nd, usuario, "Usuários", "Aprovou solicitação de cadastro", `${s.nome} <${s.email}>`, s.email);
+    setDados(nd); await salvarDados(nd);
+    notificar([{ rotulo: "Cadastro aprovado", para: [s.email], ...tplDecisaoCadastro(s.nome, true) }]);
+  };
+
+  const reprovarCadastro = async (id) => {
+    const s = (dados.solicitacoesCadastro || []).find((x) => x.id === id && x.status === "PENDENTE");
+    if (!s) return;
+    const motivo = window.prompt("Motivo da reprovação (obrigatório):");
+    if (!motivo || !motivo.trim()) return;
+    let nd = { ...dados, solicitacoesCadastro: dados.solicitacoesCadastro.map((x) => (x.id === id ? { ...x, status: "REPROVADA", decididoPor: usuario.email, dataDecisao: agoraStr(), motivo: motivo.trim() } : x)) };
+    nd = comLog(nd, usuario, "Usuários", "Reprovou solicitação de cadastro", `${s.nome} <${s.email}> — ${motivo.trim()}`, s.email);
+    setDados(nd); await salvarDados(nd);
+    notificar([{ rotulo: "Cadastro reprovado", para: [s.email], ...tplDecisaoCadastro(s.nome, false, motivo.trim()) }]);
+  };
+
+  // "Esqueci minha senha" da tela de login: nunca confirma se o e-mail existe (evita enumeração) —
+  // só notifica os GM quando o e-mail realmente já tem cadastro e senha definida. A ação de
+  // efetivamente limpar a senha continua manual, feita pelo GM em Configurações → Usuários.
+  const solicitarRedefinicaoSenha = async (email) => {
+    const d0 = dados || dadosVazios();
+    const e = (email || "").trim().toLowerCase();
+    const u = d0.usuarios[e];
+    if (u && u.senha) {
+      const dataHora = agoraStr();
+      let nd = comLog(d0, null, "Acesso", "Solicitou redefinição de senha (tela de login)", "", e);
+      setDados(nd); await salvarDados(nd);
+      notificar([{ rotulo: "Alerta aos administradores (Redefinição de senha)", para: listaAdmins(nd), ...tplAlertaAdminSenha(e, dataHora) }]);
+    }
+    return { ok: true };
+  };
+
   // Novos pedidos: confirmação ao solicitante + alerta aos administradores RESPONSÁVEIS pelo solicitante
   const notificarSolicitacao = (tipo, u, d, resumo, dataHora, tabela) => {
     // Administradores vinculados ao usuário; sem vínculo definido, alerta todos (garantia de que nada se perde)
@@ -5563,7 +5788,13 @@ function App() {
       Carregando sistema…
     </div>
   );
-  if (!usuario) return <TelaLogin aoEntrar={entrar} tentarLoginDemo={tentarLoginDemo} criarSenhaELogar={criarSenhaELogar} resetPrimeiroAdmin={resetPrimeiroAdmin} />;
+  if (!usuario) return (
+    <>
+      <TelaLogin aoEntrar={entrar} tentarLoginDemo={tentarLoginDemo} criarSenhaELogar={criarSenhaELogar} resetPrimeiroAdmin={resetPrimeiroAdmin}
+        mostrarPrimeiroAcesso={!existeGmComSenha(dados)} solicitarCadastro={solicitarCadastro} solicitarRedefinicaoSenha={solicitarRedefinicaoSenha} />
+      <ModalEmails info={emails} aoFechar={() => setEmails(null)} />
+    </>
+  );
 
   // perfil sempre atualizado (caso um admin altere)
   const usuarioAtual = { ...usuario, ...(dados.usuarios[usuario.email] || {}) };
@@ -5747,7 +5978,7 @@ function App() {
         {/* Configurações — administração do AURA 360° Planta como um todo (usuários, permissões,
             auditoria e versão); nível global, fora de qualquer Grupo/Subsistema. Só GM acessa. */}
         {area === "CONFIG" && (
-          <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} aba={configAba} setAba={setConfigAba} />
+          <TelaConfig dados={dados} setDados={setDados} usuario={usuarioAtual} aba={configAba} setAba={setConfigAba} aprovarCadastro={aprovarCadastro} reprovarCadastro={reprovarCadastro} />
         )}
       </main>
 
