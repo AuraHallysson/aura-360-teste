@@ -92,8 +92,8 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.22.2";
-const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
+const VERSAO_APP = "1.23.0";
+const VERSAO_DATA = "2026-09-15"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
@@ -5146,29 +5146,10 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(false);
 
-  // ---- Modo real: login via popup da Microsoft (valida credenciais de verdade) ----
-  const entrarMicrosoft = async () => {
-    setErro(""); setCarregando(true);
-    try {
-      const resp = await obterMsal().loginPopup({ scopes: ["User.Read", "Mail.Send"] });
-      const conta = resp.account;
-      const e = (conta.username || "").toLowerCase();
-      if (!e.endsWith(DOMINIO)) {
-        setErro(`Esta conta não pertence ao domínio ${DOMINIO}.`);
-      } else {
-        const r = await aoEntrar(e, conta.name); // valida se o usuário está cadastrado no sistema
-        if (r && r.erro) setErro(r.erro);
-      }
-    } catch (ex) {
-      if (!String(ex).includes("user_cancelled")) setErro("Falha na autenticação Microsoft. Tente novamente ou contate a TI.");
-    } finally { setCarregando(false); }
-  };
-
-  // ---- Modo demonstração: e-mail cadastrado + senha ----
+  // ---- Login: e-mail cadastrado pelo administrador + senha ----
   const entrarDemo = async () => {
     setErro("");
     const e = email.trim().toLowerCase();
-    if (!e.endsWith(DOMINIO)) { setErro(`Acesso permitido apenas para contas do domínio ${DOMINIO}.`); return; }
     setCarregando(true);
     const r = await tentarLoginDemo(e, senha);
     setCarregando(false);
@@ -5194,73 +5175,60 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
           <div style={{ fontSize: 13, color: CORES.cinza, marginTop: 4, textTransform: "uppercase", letterSpacing: ".12em" }}>Portal integrado · Aura Minerals</div>
           {AMBIENTE === "teste" && <div style={{ marginTop: 10, display: "inline-block", background: CORES.laranja, color: "#fff", borderRadius: 8, padding: "3px 12px", fontSize: 11.5, fontWeight: 700, letterSpacing: ".03em" }}>🧪 AMBIENTE DE TESTES</div>}
         </div>
-        {AUTENTICACAO_REAL ? (
-          <div>
-            <Botao onClick={entrarMicrosoft} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
-              {carregando ? "Autenticando…" : "Entrar com conta Microsoft"}
-            </Botao>
-            {erro && <p style={{ color: CORES.laranja, fontSize: 13, margin: "10px 0 0" }}>{erro}</p>}
-            <p style={{ fontSize: 11.5, color: CORES.cinza, marginTop: 16, textAlign: "center", lineHeight: 1.5 }}>
-              Autenticação via Microsoft Entra ID, restrita ao diretório da Aura Minerals.
-            </p>
+        <div>
+          <div style={{ background: "rgba(244,97,77,.08)", border: `1px solid ${CORES.laranja}`, borderRadius: 8, padding: "10px 12px", fontSize: 12, color: CORES.azul, marginBottom: 14, lineHeight: 1.5 }}>
+            Acesso restrito a usuários cadastrados pelo administrador do sistema.
           </div>
-        ) : (
-          <div>
-            <div style={{ background: "rgba(244,97,77,.08)", border: `1px solid ${CORES.laranja}`, borderRadius: 8, padding: "10px 12px", fontSize: 12, color: CORES.azul, marginBottom: 14, lineHeight: 1.5 }}>
-              <strong style={{ color: CORES.laranja }}>⚠ MODO DEMONSTRAÇÃO</strong> — acesso restrito a usuários cadastrados pelo administrador.
-              A validação de credenciais reais na Microsoft é ativada quando a TI registrar o app no Entra ID.
+          {fase === "login" ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <Campo label="E-mail corporativo">
+                <input style={inputStyle} value={email}
+                  onChange={(e) => { setEmail(e.target.value); setErro(""); }} />
+              </Campo>
+              <Campo label="Senha">
+                <input style={inputStyle} type="password" value={senha}
+                  onChange={(e) => { setSenha(e.target.value); setErro(""); }}
+                  onKeyDown={(e) => e.key === "Enter" && entrarDemo()} />
+              </Campo>
+              {erro && <p style={{ color: CORES.laranja, fontSize: 13, margin: 0 }}>{erro}</p>}
+              <Botao onClick={entrarDemo} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
+                {carregando ? "Verificando…" : "Entrar"}
+              </Botao>
+              <p style={{ fontSize: 11.5, color: CORES.cinza, margin: 0, textAlign: "center" }}>
+                Sem acesso? Solicite seu cadastro a um administrador do sistema.
+              </p>
+              {resetPrimeiroAdmin && (
+                <button type="button" onClick={async () => {
+                  await resetPrimeiroAdmin();
+                  setEmail(PRIMEIRO_ADMIN); setSenha(""); setErro("");
+                  avisar("Senha do primeiro administrador redefinida. Clique em Entrar para criar uma nova senha.");
+                }} style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", padding: 0 }}>
+                  Primeiro administrador sem acesso? Redefinir minha senha
+                </button>
+              )}
             </div>
-            {fase === "login" ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <Campo label="E-mail corporativo">
-                  <input style={inputStyle} value={email} placeholder="Seu e-mail corporativo"
-                    onChange={(e) => { setEmail(e.target.value); setErro(""); }} />
-                </Campo>
-                <Campo label="Senha">
-                  <input style={inputStyle} type="password" value={senha} placeholder="Sua senha"
-                    onChange={(e) => { setSenha(e.target.value); setErro(""); }}
-                    onKeyDown={(e) => e.key === "Enter" && entrarDemo()} />
-                </Campo>
-                {erro && <p style={{ color: CORES.laranja, fontSize: 13, margin: 0 }}>{erro}</p>}
-                <Botao onClick={entrarDemo} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
-                  {carregando ? "Verificando…" : "Entrar"}
-                </Botao>
-                <p style={{ fontSize: 11.5, color: CORES.cinza, margin: 0, textAlign: "center" }}>
-                  Sem acesso? Solicite seu cadastro a um administrador do sistema.
-                </p>
-                {resetPrimeiroAdmin && (
-                  <button type="button" onClick={async () => {
-                    await resetPrimeiroAdmin();
-                    setEmail(PRIMEIRO_ADMIN); setSenha(""); setErro("");
-                    avisar("Senha do primeiro administrador redefinida. Clique em Entrar para criar uma nova senha.");
-                  }} style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", padding: 0 }}>
-                    Primeiro administrador sem acesso? Redefinir minha senha
-                  </button>
-                )}
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ fontSize: 13.5, color: CORES.azul, lineHeight: 1.5 }}>
+                <strong>Primeiro acesso de {email.trim().toLowerCase()}.</strong><br />
+                Crie sua senha pessoal. Ela será armazenada apenas de forma criptografada (hash irreversível).
               </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ fontSize: 13.5, color: CORES.azul, lineHeight: 1.5 }}>
-                  <strong>Primeiro acesso de {email.trim().toLowerCase()}.</strong><br />
-                  Crie sua senha pessoal. Ela será armazenada apenas de forma criptografada (hash irreversível).
-                </div>
-                <Campo label="Nova senha (mín. 6 caracteres)">
-                  <input style={inputStyle} type="password" autoFocus value={senha} onChange={(e) => { setSenha(e.target.value); setErro(""); }} />
-                </Campo>
-                <Campo label="Confirmar senha">
-                  <input style={inputStyle} type="password" value={senha2} onChange={(e) => { setSenha2(e.target.value); setErro(""); }}
-                    onKeyDown={(e) => e.key === "Enter" && confirmarNovaSenha()} />
-                </Campo>
-                {erro && <p style={{ color: CORES.laranja, fontSize: 13, margin: 0 }}>{erro}</p>}
-                <Botao onClick={confirmarNovaSenha} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
-                  {carregando ? "Salvando…" : "Criar senha e entrar"}
-                </Botao>
-                <button onClick={() => { setFase("login"); setSenha(""); setSenha2(""); setErro(""); }}
-                  style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>← Voltar</button>
-              </div>
-            )}
-          </div>
-        )}
+              <Campo label="Nova senha (mín. 6 caracteres)">
+                <input style={inputStyle} type="password" autoFocus value={senha} onChange={(e) => { setSenha(e.target.value); setErro(""); }} />
+              </Campo>
+              <Campo label="Confirmar senha">
+                <input style={inputStyle} type="password" value={senha2} onChange={(e) => { setSenha2(e.target.value); setErro(""); }}
+                  onKeyDown={(e) => e.key === "Enter" && confirmarNovaSenha()} />
+              </Campo>
+              {erro && <p style={{ color: CORES.laranja, fontSize: 13, margin: 0 }}>{erro}</p>}
+              <Botao onClick={confirmarNovaSenha} disabled={carregando} style={{ width: "100%", padding: "12px" }}>
+                {carregando ? "Salvando…" : "Criar senha e entrar"}
+              </Botao>
+              <button onClick={() => { setFase("login"); setSenha(""); setSenha2(""); setErro(""); }}
+                style={{ border: "none", background: "none", color: CORES.cinza, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>← Voltar</button>
+            </div>
+          )}
+        </div>
       </div>
       <RodapeVersao style={{ marginTop: 4 }} />
     </div>
