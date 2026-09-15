@@ -92,7 +92,7 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.22.1";
+const VERSAO_APP = "1.22.2";
 const VERSAO_DATA = "2026-09-03"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
@@ -5212,8 +5212,8 @@ function TelaLogin({ aoEntrar, tentarLoginDemo, criarSenhaELogar, resetPrimeiroA
             </div>
             {fase === "login" ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <Campo label={`E-mail corporativo (${DOMINIO})`}>
-                  <input style={inputStyle} value={email} placeholder={`nome.sobrenome${DOMINIO}`}
+                <Campo label="E-mail corporativo">
+                  <input style={inputStyle} value={email} placeholder="Seu e-mail corporativo"
                     onChange={(e) => { setEmail(e.target.value); setErro(""); }} />
                 </Campo>
                 <Campo label="Senha">
