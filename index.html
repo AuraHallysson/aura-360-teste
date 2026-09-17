@@ -92,8 +92,8 @@ const AMBIENTE_ROTULO = AMBIENTE === "teste" ? "Ambiente de Testes" : "Homologa�
 /* Controle de versão do sistema — atualizar a cada release (ver CHANGELOG.md).
    Convenção: MAJOR.MINOR.PATCH — MAJOR: mudança que quebra dados/compatibilidade;
    MINOR: novas funcionalidades; PATCH: correções pontuais. */
-const VERSAO_APP = "1.24.0";
-const VERSAO_DATA = "2026-09-15"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
+const VERSAO_APP = "1.24.1";
+const VERSAO_DATA = "2026-09-17"; // formato ISO (AAAA-MM-DD) — mantém ordenação/comparação simples
 // Exibição no padrão brasileiro (DD/MM/AAAA); aceita "AAAA-MM-DD" ou já formatada
 const formatarDataBR = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
@@ -2877,11 +2877,13 @@ function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
   };
 
   // O solicitante confirma o recebimento após o Administrador marcar "Entregue" no Relatório.
-  // Uma vez confirmado, só um Administrador pode desmarcar (feito na tela de Relatórios).
+  // O próprio solicitante também pode desmarcar depois (além do Administrador, que também pode
+  // desfazer isso pela tela de Relatórios).
   const confirmarRecebimento = async (c) => {
-    if (!c.entregue || c.recebido) return;
-    let nd = { ...dados, compras: dados.compras.map((x) => (x.id === c.id ? { ...x, recebido: true, recebidoEm: agoraStr(), recebidoPor: usuario.nome } : x)) };
-    nd = comLog(nd, usuario, "Movimentação", "Confirmou recebimento do item", `${c.codigo || ""} — ${c.descricao || ""}`, c.id);
+    if (!c.entregue) return;
+    const marcando = !c.recebido;
+    let nd = { ...dados, compras: dados.compras.map((x) => (x.id === c.id ? { ...x, recebido: marcando, recebidoEm: marcando ? agoraStr() : "", recebidoPor: marcando ? usuario.nome : "" } : x)) };
+    nd = comLog(nd, usuario, "Movimentação", marcando ? "Confirmou recebimento do item" : "Desmarcou recebimento do item (solicitante)", `${c.codigo || ""} — ${c.descricao || ""}`, c.id);
     setDados(nd); await salvarDados(nd);
   };
 
@@ -3005,10 +3007,10 @@ function TelaCompras({ dados, setDados, usuario, notificarSolicitacao }) {
                       )}
                     </td>
                     <td style={{ ...td, textAlign: "center" }}>
-                      <input type="checkbox" checked={!!c.recebido} disabled={!c.entregue || c.recebido}
+                      <input type="checkbox" checked={!!c.recebido} disabled={!c.entregue}
                         onChange={() => confirmarRecebimento(c)}
-                        title={c.recebido ? `Recebido em ${c.recebidoEm}` : c.entregue ? "Confirmar recebimento do item" : "Aguardando o item ser entregue pelo administrador"}
-                        style={{ width: 17, height: 17, accentColor: CORES.laranja, cursor: (!c.entregue || c.recebido) ? "not-allowed" : "pointer" }} />
+                        title={c.recebido ? `Recebido em ${c.recebidoEm} — clique para desmarcar` : c.entregue ? "Confirmar recebimento do item" : "Aguardando o item ser entregue pelo administrador"}
+                        style={{ width: 17, height: 17, accentColor: CORES.laranja, cursor: !c.entregue ? "not-allowed" : "pointer" }} />
                     </td>
                     <td style={{ ...td, whiteSpace: "nowrap" }}>
                       <Botao tipo="contorno" disabled={c.concluido || c.cancelado} style={{ padding: "4px 10px", fontSize: 12, marginRight: 6 }} onClick={() => setEditando({ ...c })} title={c.concluido ? "Item concluído: bloqueado" : c.cancelado ? "Item cancelado: bloqueado" : "Editar"}>Editar</Botao>
